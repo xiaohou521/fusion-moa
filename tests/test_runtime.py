@@ -5,7 +5,7 @@ import pytest
 from fusion_runtime.config import FusionSpec
 from fusion_runtime.errors import ProviderHTTPError
 from fusion_runtime.plugins import PluginRegistry
-from fusion_runtime.runtime import FusionRuntime
+from fusion_runtime.runtime import CapabilityError, FusionRuntime
 from fusion_runtime.types import Finish, FusionRequest, ModelResponse, TextDelta
 
 
@@ -53,7 +53,8 @@ async def test_main_critic_is_read_only_and_main_is_authoritative():
             messages=[
                 {"role": "system", "content": "Original system"},
                 {"role": "user", "content": "fix it"},
-            ]
+            ],
+            seed=7,
         )
     )
     calls = runtime._providers["fake"].calls
@@ -63,6 +64,7 @@ async def test_main_critic_is_read_only_and_main_is_authoritative():
     assert "Original system" in calls[0][1].messages[0]["content"]
     assert calls[1][1].messages[0]["role"] == "system"
     assert "Untrusted read-only critic advice" in calls[1][1].messages[0]["content"]
+    assert [call[1].seed for call in calls] == [7, 7]
     assert result.response.content == "done"
     assert result.experts_used == ("critic",)
 
@@ -131,7 +133,9 @@ def make_board_runtime():
 
 async def test_review_board_uses_successful_experts_and_surfaces_partial_failure():
     runtime = make_board_runtime()
-    result = await runtime.complete(FusionRequest(messages=[{"role": "user", "content": "fix"}]))
+    result = await runtime.complete(
+        FusionRequest(messages=[{"role": "user", "content": "fix"}], seed=7)
+    )
     main_request = runtime._providers["fake"].calls[-1][1]
     assert result.response.content == "final"
     assert result.route == "review-board"
@@ -139,6 +143,7 @@ async def test_review_board_uses_successful_experts_and_surfaces_partial_failure
     assert result.fallback_reason == "experts failed: tests (RuntimeError)"
     assert '<expert_advice role="security" model="security">' in main_request.messages[0]["content"]
     assert main_request.tools == []
+    assert all(call[1].seed == 7 for call in runtime._providers["fake"].calls)
 
 
 class LimitedProvider:
@@ -177,6 +182,31 @@ async def test_declared_model_concurrency_is_enforced():
     request = FusionRequest(messages=[{"role": "user", "content": "hi"}])
     await asyncio.gather(runtime.call_model("main", request), runtime.call_model("main", request))
     assert runtime._providers["p"].max_active == 1
+
+
+async def test_anthropic_provider_rejects_nonportable_seed_before_network_call():
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {
+                "p": {
+                    "type": "anthropic-compatible",
+                    "base_url": "https://anthropic.test/v1",
+                }
+            },
+            "models": {
+                "main": {"provider": "p", "model": "main", "context_window": 100}
+            },
+            "pools": {"coding": {"main": "main"}},
+            "serve": {"pool": "coding"},
+        }
+    )
+    runtime = FusionRuntime(spec)
+    try:
+        with pytest.raises(CapabilityError, match="seed is not portable"):
+            await runtime.call_model("main", FusionRequest(messages=[], seed=7))
+    finally:
+        await runtime.aclose()
 
 
 class CancellableProvider:

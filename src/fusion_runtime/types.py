@@ -14,6 +14,7 @@ class FusionRequest:
     reasoning_effort: str | None = None
     max_tokens: int | None = None
     temperature: float | None = None
+    seed: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

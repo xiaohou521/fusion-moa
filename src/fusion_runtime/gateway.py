@@ -253,6 +253,9 @@ def _request(
     reasoning_effort = payload.get("reasoning_effort")
     if reasoning_effort is not None and not isinstance(reasoning_effort, str):
         raise HTTPException(status_code=422, detail="reasoning_effort must be a string")
+    seed = payload.get("seed")
+    if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool)):
+        raise HTTPException(status_code=422, detail="seed must be an integer")
     return FusionRequest(
         messages=messages,
         tools=tools,
@@ -261,6 +264,7 @@ def _request(
         reasoning_effort=reasoning_effort,
         max_tokens=max_tokens,
         temperature=temperature,
+        seed=seed,
     )
 
 

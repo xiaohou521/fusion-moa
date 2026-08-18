@@ -86,12 +86,14 @@ async def test_openai_provider_preserves_tools_and_tool_calls():
             tool_choice="required",
             parallel_tool_calls=False,
             reasoning_effort="high",
+            seed=7,
         ),
     )
     assert captured["tools"][0]["function"]["name"] == "pwd"
     assert captured["tool_choice"] == "required"
     assert captured["parallel_tool_calls"] is False
     assert captured["reasoning_effort"] == "high"
+    assert captured["seed"] == 7
     assert response.tool_calls[0]["id"] == "call_1"
     await provider.aclose()
 

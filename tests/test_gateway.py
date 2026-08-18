@@ -177,6 +177,7 @@ def test_responses_tool_round_trip_and_stream_contract():
             "tool_choice": "required",
             "parallel_tool_calls": False,
             "reasoning_effort": "high",
+            "seed": 7,
         },
     )
     request = runtime.requests[0]
@@ -185,6 +186,7 @@ def test_responses_tool_round_trip_and_stream_contract():
     assert request.tool_choice == "required"
     assert request.parallel_tool_calls is False
     assert request.reasoning_effort == "high"
+    assert request.seed == 7
     assert "event: response.function_call_arguments.delta" in response.text
     assert '"call_id":"call_1"' in response.text
     assert "event: response.completed" in response.text

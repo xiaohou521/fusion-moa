@@ -186,6 +186,8 @@ class OpenAICompatibleProvider:
                 payload["parallel_tool_calls"] = request.parallel_tool_calls
         if request.temperature is not None:
             payload["temperature"] = request.temperature
+        if request.seed is not None:
+            payload["seed"] = request.seed
         if request.reasoning_effort is not None:
             payload["reasoning_effort"] = request.reasoning_effort
         return payload

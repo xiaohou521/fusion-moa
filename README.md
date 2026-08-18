@@ -123,6 +123,12 @@ errors. The OpenAI Chat, OpenAI Responses, and Anthropic Messages mappings are
 covered by deterministic protocol tests, including cancellation and terminal
 errors.
 
+`FusionRequest.seed` is forwarded by OpenAI-compatible providers and preserved
+through the built-in policies, including expert calls. The built-in Anthropic
+provider rejects seeded requests visibly because that parameter is not portable
+to Anthropic Messages; a frozen card must record this as a reproducibility issue
+or use a provider that honors the seed.
+
 ## DeepSeek Harness
 
 [`integrations/deepseek-harness`](integrations/deepseek-harness) is a real
@@ -148,6 +154,10 @@ fusion-runtime-gate \
 
 The command exits `0` only if every quality, latency, cost, infrastructure, and
 reproducibility gate passes; otherwise it exits `2` with explicit reasons.
+Summaries can record `mean_total_tokens` across the main and all expert calls,
+and a policy can set `max_mean_token_ratio`. Any declared
+`reproducibility_issues` make promotion fail closed even when aggregate quality
+improves.
 
 Provider-neutral runtime code belongs in core. Vendor SDKs, custom routers,
 training backends, and additional harness adapters belong in plugins. See

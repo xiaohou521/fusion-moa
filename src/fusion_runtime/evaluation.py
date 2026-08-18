@@ -23,6 +23,8 @@ class EvaluationSummary(StrictModel):
     infrastructure_failures: int = Field(default=0, ge=0)
     p95_latency_ms: float = Field(gt=0)
     mean_cost_usd: float = Field(ge=0)
+    mean_total_tokens: float = Field(default=0, ge=0)
+    reproducibility_issues: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def counts_are_possible(self) -> EvaluationSummary:
@@ -48,6 +50,7 @@ class PromotionPolicy(StrictModel):
     min_pass_rate_delta: float = 0.0
     max_p95_latency_ratio: float = Field(default=1.25, gt=0)
     max_mean_cost_ratio: float = Field(default=1.25, gt=0)
+    max_mean_token_ratio: float | None = Field(default=None, gt=0)
     max_infrastructure_failure_rate_delta: float = Field(default=0.0, ge=0)
     require_any_improvement: bool = True
 
@@ -58,6 +61,7 @@ class PromotionDecision(StrictModel):
     pass_rate_delta: float
     p95_latency_ratio: float
     mean_cost_ratio: float
+    mean_total_token_ratio: float
     infrastructure_failure_rate_delta: float
 
 
@@ -82,10 +86,21 @@ def evaluate_promotion(
         reasons.append("baseline has too few attempts")
     if candidate.attempted < policy.min_attempts:
         reasons.append("candidate has too few attempts")
+    if baseline.reproducibility_issues:
+        reasons.append(
+            "baseline reproducibility is not verified: "
+            + "; ".join(baseline.reproducibility_issues)
+        )
+    if candidate.reproducibility_issues:
+        reasons.append(
+            "candidate reproducibility is not verified: "
+            + "; ".join(candidate.reproducibility_issues)
+        )
 
     pass_delta = candidate.pass_rate - baseline.pass_rate
     latency_ratio = candidate.p95_latency_ms / baseline.p95_latency_ms
     cost_ratio = _ratio(candidate.mean_cost_usd, baseline.mean_cost_usd)
+    token_ratio = _ratio(candidate.mean_total_tokens, baseline.mean_total_tokens)
     infra_delta = candidate.infrastructure_failure_rate - baseline.infrastructure_failure_rate
     if pass_delta < policy.min_pass_rate_delta:
         reasons.append(
@@ -97,6 +112,10 @@ def evaluate_promotion(
         )
     if cost_ratio > policy.max_mean_cost_ratio:
         reasons.append(f"mean cost ratio {cost_ratio:.6f} exceeds {policy.max_mean_cost_ratio:.6f}")
+    if policy.max_mean_token_ratio is not None and token_ratio > policy.max_mean_token_ratio:
+        reasons.append(
+            f"mean token ratio {token_ratio:.6f} exceeds {policy.max_mean_token_ratio:.6f}"
+        )
     if infra_delta > policy.max_infrastructure_failure_rate_delta:
         reasons.append(
             "infrastructure-failure-rate delta "
@@ -112,6 +131,7 @@ def evaluate_promotion(
         pass_rate_delta=pass_delta,
         p95_latency_ratio=latency_ratio,
         mean_cost_ratio=cost_ratio,
+        mean_total_token_ratio=token_ratio,
         infrastructure_failure_rate_delta=infra_delta,
     )
 

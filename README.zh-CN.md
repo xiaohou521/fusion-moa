@@ -39,6 +39,11 @@ assert_stream_conforms(events)
 初始协议错误仍能返回普通 JSON 错误；已经开始的流则按 Chat、Responses 或
 Anthropic Messages 各自的原生错误事件正常终止。预取不会缓冲完整回答。
 
+`FusionRequest.seed` 会由 OpenAI-compatible provider 传给后端，并在内置策略的
+主模型与专家调用中保留。Anthropic Messages 没有可移植的同等参数，因此内置
+Anthropic provider 会显式拒绝带 seed 的请求；冻结卡必须把它记为可复现性问题，
+或选择真正支持 seed 的 provider。
+
 ## 快速开始
 
 ```bash
@@ -77,6 +82,8 @@ fusion-runtime-gate --baseline direct.json --candidate candidate.json
 ```
 
 只有质量、延迟、成本、基础设施失败率和可复现性全部过门才返回成功。
+摘要可记录主模型与全部专家调用的 `mean_total_tokens`，门策略可设置
+`max_mean_token_ratio`；只要 `reproducibility_issues` 非空，晋升就会 fail closed。
 
 DeepSeek Harness 的安装见
 [`integrations/deepseek-harness`](integrations/deepseek-harness)。官方目前处于 developer

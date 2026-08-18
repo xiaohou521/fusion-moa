@@ -54,6 +54,10 @@ class FusionRuntime:
             raise CapabilityError(
                 "reasoning_effort is not portable to the built-in anthropic-compatible provider"
             )
+        if request.seed is not None and provider_type == "anthropic-compatible":
+            raise CapabilityError(
+                "seed is not portable to the built-in anthropic-compatible provider"
+            )
 
     async def call_model(self, name: str, request: FusionRequest) -> ModelResponse:
         self._validate_request(name, request)

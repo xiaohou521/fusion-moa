@@ -5,7 +5,17 @@ from fusion_runtime.evaluation import (
 )
 
 
-def summary(recipe, *, passed, latency=1000, cost=1, infra=0, digest="tasks"):
+def summary(
+    recipe,
+    *,
+    passed,
+    latency=1000,
+    cost=1,
+    tokens=1000,
+    infra=0,
+    digest="tasks",
+    reproducibility_issues=None,
+):
     return EvaluationSummary(
         recipe=recipe,
         task_set_digest=digest,
@@ -16,6 +26,8 @@ def summary(recipe, *, passed, latency=1000, cost=1, infra=0, digest="tasks"):
         infrastructure_failures=infra,
         p95_latency_ms=latency,
         mean_cost_usd=cost,
+        mean_total_tokens=tokens,
+        reproducibility_issues=reproducibility_issues or [],
     )
 
 
@@ -56,6 +68,32 @@ def test_identical_candidate_is_not_recursive_improvement():
     )
     assert decision.promote is False
     assert "candidate improves no gated metric" in decision.reasons
+
+
+def test_unverified_reproducibility_fails_closed():
+    decision = evaluate_promotion(
+        summary("direct", passed=60),
+        summary(
+            "candidate",
+            passed=66,
+            reproducibility_issues=["provider did not honor a generation seed"],
+        ),
+    )
+
+    assert decision.promote is False
+    assert any("candidate reproducibility" in reason for reason in decision.reasons)
+
+
+def test_optional_token_ratio_gate_accounts_for_expert_calls():
+    decision = evaluate_promotion(
+        summary("direct", passed=60, tokens=1000),
+        summary("review-board", passed=66, tokens=3000),
+        PromotionPolicy(max_mean_token_ratio=2.0),
+    )
+
+    assert decision.promote is False
+    assert decision.mean_total_token_ratio == 3.0
+    assert any("mean token ratio" in reason for reason in decision.reasons)
 
 
 def test_emitted_summary_round_trips_without_computed_fields():

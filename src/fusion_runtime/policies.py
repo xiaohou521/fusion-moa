@@ -61,6 +61,7 @@ class MainCriticPolicy:
                     messages=critic_prompt,
                     max_tokens=_expert_max_tokens(self.spec),
                     temperature=0,
+                    seed=request.seed,
                 ),
             )
         except Exception as exc:
@@ -84,6 +85,7 @@ class MainCriticPolicy:
             reasoning_effort=request.reasoning_effort,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
+            seed=request.seed,
             metadata=request.metadata,
         )
         return PreparedCall(
@@ -125,6 +127,7 @@ class ReviewBoardPolicy:
                 ),
                 max_tokens=_expert_max_tokens(self.spec),
                 temperature=0,
+                seed=request.seed,
                 metadata={"fusion_expert_role": role},
             )
             return role, model_name, await runtime.call_model(model_name, expert_request)
@@ -175,6 +178,7 @@ class ReviewBoardPolicy:
             reasoning_effort=request.reasoning_effort,
             max_tokens=request.max_tokens,
             temperature=request.temperature,
+            seed=request.seed,
             metadata=request.metadata,
         )
         return PreparedCall(
