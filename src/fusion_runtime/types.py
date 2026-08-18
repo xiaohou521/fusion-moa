@@ -58,7 +58,14 @@ class Usage:
     usage: dict[str, int]
 
 
-ModelStreamEvent = TextDelta | ToolCallDelta | Finish | Usage
+@dataclass(frozen=True)
+class StreamError:
+    message: str
+    code: str = "provider_stream_error"
+    retryable: bool = False
+
+
+ModelStreamEvent = TextDelta | ToolCallDelta | Finish | Usage | StreamError
 
 
 @dataclass(frozen=True)

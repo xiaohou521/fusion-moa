@@ -7,11 +7,13 @@ from typing import Any, Protocol
 import httpx
 
 from .config import ModelSpec, ProviderSpec
+from .errors import ProviderError, ProviderHTTPError, ProviderProtocolError, ProviderTransportError
 from .types import (
     Finish,
     FusionRequest,
     ModelResponse,
     ModelStreamEvent,
+    StreamError,
     TextDelta,
     ToolCallDelta,
     Usage,
@@ -40,11 +42,19 @@ class OpenAICompatibleProvider:
     async def complete(self, model: ModelSpec, request: FusionRequest) -> ModelResponse:
         payload = self._payload(model, request)
         payload["stream"] = False
-        response = await self._client.post("chat/completions", json=payload)
-        response.raise_for_status()
-        body = response.json()
-        choice = body["choices"][0]
-        message = choice["message"]
+        try:
+            response = await self._client.post("chat/completions", json=payload)
+        except httpx.HTTPError as exc:
+            raise ProviderTransportError() from exc
+        _raise_for_status(response)
+        body = _response_json(response)
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ProviderProtocolError()
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise ProviderProtocolError()
         return ModelResponse(
             content=message.get("content") or "",
             tool_calls=message.get("tool_calls") or [],
@@ -59,38 +69,108 @@ class OpenAICompatibleProvider:
         payload = self._payload(model, request)
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": True}
-        async with self._client.stream("POST", "chat/completions", json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    break
-                body = json.loads(data)
-                if body.get("error"):
-                    raise RuntimeError(f"provider stream error: {body['error']}")
-                for choice in body.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    content = delta.get("content")
-                    if isinstance(content, str) and content:
-                        yield TextDelta(content)
-                    for call in delta.get("tool_calls") or []:
-                        function = call.get("function") or {}
-                        yield ToolCallDelta(
-                            index=int(call.get("index", 0)),
-                            id=call.get("id"),
-                            name=function.get("name"),
-                            arguments=function.get("arguments") or "",
+        emitted = False
+        finished = False
+        try:
+            async with self._client.stream("POST", "chat/completions", json=payload) as response:
+                _raise_for_status(response)
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    try:
+                        body = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        if finished:
+                            return
+                        if emitted:
+                            yield StreamError(
+                                "upstream provider emitted malformed stream JSON",
+                                code="provider_protocol_error",
+                            )
+                            return
+                        raise ProviderProtocolError(
+                            "upstream provider emitted malformed stream JSON"
+                        ) from exc
+                    if not isinstance(body, dict):
+                        if finished:
+                            return
+                        if emitted:
+                            yield StreamError(
+                                "upstream provider emitted an invalid stream event",
+                                code="provider_protocol_error",
+                            )
+                            return
+                        raise ProviderProtocolError(
+                            "upstream provider emitted an invalid stream event"
                         )
-                    finish_reason = choice.get("finish_reason")
-                    if finish_reason is not None:
-                        yield Finish(str(finish_reason))
-                usage = body.get("usage")
-                if isinstance(usage, dict) and usage:
-                    yield Usage(_integer_usage(usage))
+                    if body.get("error"):
+                        if finished:
+                            return
+                        yield _canonical_stream_error(body["error"])
+                        return
+                    for choice in body.get("choices") or []:
+                        if not isinstance(choice, dict):
+                            continue
+                        if finished:
+                            continue
+                        delta = choice.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            continue
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
+                            emitted = True
+                            yield TextDelta(content)
+                        for call in delta.get("tool_calls") or []:
+                            if not isinstance(call, dict):
+                                continue
+                            function = call.get("function") or {}
+                            if not isinstance(function, dict):
+                                function = {}
+                            event = ToolCallDelta(
+                                index=_non_negative_index(call.get("index")),
+                                id=_optional_string(call.get("id")),
+                                name=_optional_string(function.get("name")),
+                                arguments=_optional_string(function.get("arguments")) or "",
+                            )
+                            if event.id is not None or event.name is not None or event.arguments:
+                                emitted = True
+                                yield event
+                        finish_reason = choice.get("finish_reason")
+                        if finish_reason is not None:
+                            emitted = True
+                            finished = True
+                            yield Finish(str(finish_reason))
+                    usage = body.get("usage")
+                    if isinstance(usage, dict) and usage:
+                        emitted = True
+                        yield Usage(_integer_usage(usage))
+        except ProviderError:
+            raise
+        except httpx.HTTPError as exc:
+            if finished:
+                return
+            if emitted:
+                yield StreamError(
+                    "upstream provider transport failed",
+                    code="upstream_transport_error",
+                    retryable=True,
+                )
+                return
+            raise ProviderTransportError() from exc
+        if finished:
+            return
+        if emitted:
+            yield StreamError(
+                "upstream provider ended without a finish event",
+                code="provider_protocol_error",
+            )
+            return
+        raise ProviderProtocolError("upstream provider returned an empty stream")
 
     @staticmethod
     def _payload(model: ModelSpec, request: FusionRequest) -> dict[str, object]:
@@ -128,17 +208,23 @@ class AnthropicCompatibleProvider:
     async def complete(self, model: ModelSpec, request: FusionRequest) -> ModelResponse:
         payload = self._payload(model, request)
         payload["stream"] = False
-        response = await self._client.post("messages", json=payload)
-        response.raise_for_status()
-        body = response.json()
+        try:
+            response = await self._client.post("messages", json=payload)
+        except httpx.HTTPError as exc:
+            raise ProviderTransportError() from exc
+        _raise_for_status(response)
+        body = _response_json(response)
+        content = body.get("content")
+        if not isinstance(content, list):
+            raise ProviderProtocolError()
         text = "".join(
             block.get("text", "")
-            for block in body.get("content", [])
-            if block.get("type") == "text"
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
         )
         tool_calls = []
-        for block in body.get("content", []):
-            if block.get("type") != "tool_use":
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             tool_calls.append(
                 {
@@ -163,54 +249,122 @@ class AnthropicCompatibleProvider:
     ) -> AsyncIterator[ModelStreamEvent]:
         payload = self._payload(model, request)
         payload["stream"] = True
-        async with self._client.stream("POST", "messages", json=payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data:
-                    continue
-                event = json.loads(data)
-                event_type = event.get("type")
-                if event_type == "error":
-                    raise RuntimeError(f"provider stream error: {event.get('error')}")
-                if event_type == "message_start":
-                    usage = (event.get("message") or {}).get("usage")
-                    if isinstance(usage, dict) and usage:
-                        yield Usage(_integer_usage(usage))
-                elif event_type == "content_block_start":
-                    block = event.get("content_block") or {}
-                    if block.get("type") == "tool_use":
-                        initial_input = block.get("input") or {}
-                        yield ToolCallDelta(
-                            index=int(event.get("index", 0)),
-                            id=block.get("id"),
-                            name=block.get("name"),
-                            arguments=(
-                                json.dumps(initial_input, separators=(",", ":"))
-                                if initial_input
-                                else ""
-                            ),
+        emitted = False
+        finished = False
+        try:
+            async with self._client.stream("POST", "messages", json=payload) as response:
+                _raise_for_status(response)
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data:
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        if finished:
+                            return
+                        if emitted:
+                            yield StreamError(
+                                "upstream provider emitted malformed stream JSON",
+                                code="provider_protocol_error",
+                            )
+                            return
+                        raise ProviderProtocolError(
+                            "upstream provider emitted malformed stream JSON"
+                        ) from exc
+                    if not isinstance(event, dict):
+                        if finished:
+                            return
+                        if emitted:
+                            yield StreamError(
+                                "upstream provider emitted an invalid stream event",
+                                code="provider_protocol_error",
+                            )
+                            return
+                        raise ProviderProtocolError(
+                            "upstream provider emitted an invalid stream event"
                         )
-                elif event_type == "content_block_delta":
-                    delta = event.get("delta") or {}
-                    if delta.get("type") == "text_delta" and delta.get("text"):
-                        yield TextDelta(str(delta["text"]))
-                    elif delta.get("type") == "input_json_delta":
-                        yield ToolCallDelta(
-                            index=int(event.get("index", 0)),
-                            arguments=str(delta.get("partial_json") or ""),
-                        )
-                elif event_type == "message_delta":
-                    usage = event.get("usage")
-                    if isinstance(usage, dict) and usage:
-                        yield Usage(_integer_usage(usage))
-                    stop_reason = (event.get("delta") or {}).get("stop_reason")
-                    if stop_reason is not None:
-                        yield Finish(str(stop_reason))
-                elif event_type == "message_stop":
-                    break
+                    event_type = event.get("type")
+                    if event_type == "error":
+                        if finished:
+                            return
+                        yield _canonical_stream_error(event.get("error"))
+                        return
+                    if finished and event_type != "message_stop":
+                        continue
+                    if event_type == "message_start":
+                        message = event.get("message") or {}
+                        usage = message.get("usage") if isinstance(message, dict) else None
+                        if isinstance(usage, dict) and usage:
+                            emitted = True
+                            yield Usage(_integer_usage(usage))
+                    elif event_type == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            initial_input = block.get("input") or {}
+                            emitted = True
+                            yield ToolCallDelta(
+                                index=_non_negative_index(event.get("index")),
+                                id=_optional_string(block.get("id")),
+                                name=_optional_string(block.get("name")),
+                                arguments=(
+                                    json.dumps(initial_input, separators=(",", ":"))
+                                    if initial_input
+                                    else ""
+                                ),
+                            )
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            continue
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            emitted = True
+                            yield TextDelta(str(delta["text"]))
+                        elif delta.get("type") == "input_json_delta":
+                            arguments = str(delta.get("partial_json") or "")
+                            if arguments:
+                                emitted = True
+                                yield ToolCallDelta(
+                                    index=_non_negative_index(event.get("index")),
+                                    arguments=arguments,
+                                )
+                    elif event_type == "message_delta":
+                        usage = event.get("usage")
+                        if isinstance(usage, dict) and usage:
+                            emitted = True
+                            yield Usage(_integer_usage(usage))
+                        delta = event.get("delta") or {}
+                        stop_reason = delta.get("stop_reason") if isinstance(delta, dict) else None
+                        if stop_reason is not None:
+                            emitted = True
+                            finished = True
+                            yield Finish(str(stop_reason))
+                    elif event_type == "message_stop":
+                        break
+        except ProviderError:
+            raise
+        except httpx.HTTPError as exc:
+            if finished:
+                return
+            if emitted:
+                yield StreamError(
+                    "upstream provider transport failed",
+                    code="upstream_transport_error",
+                    retryable=True,
+                )
+                return
+            raise ProviderTransportError() from exc
+        if finished:
+            return
+        if emitted:
+            yield StreamError(
+                "upstream provider ended without a finish event",
+                code="provider_protocol_error",
+            )
+            return
+        raise ProviderProtocolError("upstream provider returned an empty stream")
 
     @staticmethod
     def _payload(model: ModelSpec, request: FusionRequest) -> dict[str, object]:
@@ -364,3 +518,49 @@ def _integer_usage(usage: dict[str, Any]) -> dict[str, int]:
         for key, value in usage.items()
         if isinstance(value, int) and not isinstance(value, bool)
     }
+
+
+def _raise_for_status(response: httpx.Response) -> None:
+    if response.is_error:
+        raise ProviderHTTPError(response.status_code)
+
+
+def _response_json(response: httpx.Response) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except json.JSONDecodeError as exc:
+        raise ProviderProtocolError() from exc
+    if not isinstance(body, dict):
+        raise ProviderProtocolError()
+    return body
+
+
+def _canonical_stream_error(error: Any) -> StreamError:
+    code = "provider_stream_error"
+    retryable = False
+    if isinstance(error, dict):
+        candidate = error.get("code") or error.get("type")
+        if isinstance(candidate, str):
+            normalized = "".join(
+                character
+                for character in candidate[:64]
+                if character.isalnum() or character in "-_"
+            )
+            if normalized:
+                code = normalized
+        status = error.get("status") or error.get("status_code")
+        if isinstance(status, int) and not isinstance(status, bool):
+            retryable = status in {408, 409, 425, 429} or status >= 500
+    return StreamError("upstream provider stream failed", code=code, retryable=retryable)
+
+
+def _non_negative_index(value: Any) -> int:
+    try:
+        index = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(index, 0)
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) else None

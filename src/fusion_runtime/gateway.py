@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from .errors import ProviderError
 from .runtime import CapabilityError, FusionRuntime
 from .types import (
     Finish,
@@ -17,6 +18,7 @@ from .types import (
     FusionResult,
     FusionStream,
     ModelResponse,
+    StreamError,
     TextDelta,
     ToolCallDelta,
     Usage,
@@ -43,6 +45,20 @@ def create_app(runtime: FusionRuntime) -> FastAPI:
                     "message": str(exc),
                     "type": "invalid_request_error",
                     "code": "unsupported_capability",
+                }
+            },
+        )
+
+    @app.exception_handler(ProviderError)
+    async def provider_error(_request: Request, exc: ProviderError) -> JSONResponse:
+        return JSONResponse(
+            status_code=503 if exc.retryable else 502,
+            content={
+                "error": {
+                    "message": str(exc),
+                    "type": "upstream_error",
+                    "code": exc.code,
+                    "retryable": exc.retryable,
                 }
             },
         )
@@ -534,6 +550,27 @@ async def _chat_stream(
     *,
     include_usage: bool,
 ) -> AsyncIterator[str]:
+    try:
+        async for chunk in _chat_stream_events(
+            stream,
+            completion_id,
+            model,
+            created,
+            include_usage=include_usage,
+        ):
+            yield chunk
+    finally:
+        await _close_stream(stream)
+
+
+async def _chat_stream_events(
+    stream: FusionStream,
+    completion_id: str,
+    model: str,
+    created: int,
+    *,
+    include_usage: bool,
+) -> AsyncIterator[str]:
     base = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -601,6 +638,10 @@ async def _chat_stream(
             )
         elif isinstance(event, Usage) and include_usage:
             yield _data_sse({**base, "choices": [], "usage": event.usage})
+        elif isinstance(event, StreamError):
+            yield _data_sse({"error": _stream_error_body(event)})
+            yield "data: [DONE]\n\n"
+            return
     if not finish_seen:
         yield _data_sse(
             {
@@ -649,6 +690,16 @@ def _anthropic_body(result: FusionResult, message_id: str, model: str) -> dict[s
 
 
 async def _anthropic_stream(
+    stream: FusionStream, message_id: str, model: str
+) -> AsyncIterator[str]:
+    try:
+        async for chunk in _anthropic_stream_events(stream, message_id, model):
+            yield chunk
+    finally:
+        await _close_stream(stream)
+
+
+async def _anthropic_stream_events(
     stream: FusionStream, message_id: str, model: str
 ) -> AsyncIterator[str]:
     start = {
@@ -733,6 +784,23 @@ async def _anthropic_stream(
             finish_reason = _anthropic_stop_reason_value(event.reason, tool_seen=tool_seen)
         elif isinstance(event, Usage):
             usage.update(event.usage)
+        elif isinstance(event, StreamError):
+            if active_index is not None:
+                yield _event_sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": active_index},
+                )
+            yield _event_sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": {
+                        "type": event.code,
+                        "message": event.message,
+                    },
+                },
+            )
+            return
 
     if active_index is not None:
         yield _event_sse(
@@ -790,6 +858,16 @@ def _responses_body(result: FusionResult, response_id: str, model: str) -> dict[
 
 
 async def _responses_stream(
+    stream: FusionStream, response_id: str, model: str
+) -> AsyncIterator[str]:
+    try:
+        async for chunk in _responses_stream_events(stream, response_id, model):
+            yield chunk
+    finally:
+        await _close_stream(stream)
+
+
+async def _responses_stream_events(
     stream: FusionStream, response_id: str, model: str
 ) -> AsyncIterator[str]:
     created_at = time.time()
@@ -911,6 +989,21 @@ async def _responses_stream(
                 sequence += 1
         elif isinstance(event, Usage):
             usage.update(event.usage)
+        elif isinstance(event, StreamError):
+            failed = {
+                **pending,
+                "status": "failed",
+                "error": _stream_error_body(event),
+            }
+            yield _event_sse(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": failed,
+                    "sequence_number": sequence,
+                },
+            )
+            return
 
     if not output_order:
         output_order.append(("text", 0))
@@ -1076,6 +1169,21 @@ def _data_sse(data: dict[str, Any]) -> str:
 
 def _event_sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\n" + _data_sse(data)
+
+
+def _stream_error_body(event: StreamError) -> dict[str, Any]:
+    return {
+        "message": event.message,
+        "type": "upstream_error",
+        "code": event.code,
+        "retryable": event.retryable,
+    }
+
+
+async def _close_stream(stream: FusionStream) -> None:
+    close = getattr(stream.events, "aclose", None)
+    if close is not None:
+        await close()
 
 
 def _trace_headers(result: FusionResult | FusionStream) -> dict[str, str]:

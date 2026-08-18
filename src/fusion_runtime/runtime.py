@@ -7,6 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 from .config import FusionSpec
+from .errors import ProviderProtocolError
 from .plugins import PluginRegistry
 from .policies import DirectPolicy, MainCriticPolicy, ReviewBoardPolicy
 from .providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
@@ -102,16 +103,23 @@ class FusionRuntime:
         token = _trace_id.set(uuid.uuid4().hex)
         try:
             prepared = await self._policy.prepare(self, pool or self.spec.serve.pool, request)
-            # Validate before returning HTTP headers. Provider transport errors remain
-            # stream errors because the connection is opened during iteration.
             self._validate_request(prepared.model_name, prepared.request)
             provider = self._providers[self.spec.models[prepared.model_name].provider]
             if not hasattr(provider, "stream"):
                 raise CapabilityError(
                     "selected provider does not implement native final-model streaming"
                 )
+            events = self.stream_model(prepared.model_name, prepared.request)
+            try:
+                first = await anext(events)
+            except StopAsyncIteration as exc:
+                await events.aclose()
+                raise ProviderProtocolError("upstream provider returned an empty stream") from exc
+            except BaseException:
+                await events.aclose()
+                raise
             return FusionStream(
-                events=self.stream_model(prepared.model_name, prepared.request),
+                events=_PrefetchedStream(first, events),
                 route=prepared.route,
                 experts_used=prepared.experts_used,
                 fallback_reason=prepared.fallback_reason,
@@ -132,3 +140,28 @@ class FusionRuntime:
             result = close()
             if inspect.isawaitable(result):
                 await result
+
+
+class _PrefetchedStream:
+    def __init__(self, first: ModelStreamEvent, events: AsyncIterator[ModelStreamEvent]) -> None:
+        self._first = first
+        self._events = events
+        self._first_pending = True
+        self._closed = False
+
+    def __aiter__(self) -> _PrefetchedStream:
+        return self
+
+    async def __anext__(self) -> ModelStreamEvent:
+        if self._closed:
+            raise StopAsyncIteration
+        if self._first_pending:
+            self._first_pending = False
+            return self._first
+        return await anext(self._events)
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._events.aclose()

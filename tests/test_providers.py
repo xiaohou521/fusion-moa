@@ -1,10 +1,19 @@
 import json
 
 import httpx
+import pytest
 
 from fusion_runtime.config import ModelSpec, ProviderSpec
+from fusion_runtime.errors import ProviderHTTPError, ProviderProtocolError
 from fusion_runtime.providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
-from fusion_runtime.types import Finish, FusionRequest, TextDelta, ToolCallDelta, Usage
+from fusion_runtime.types import (
+    Finish,
+    FusionRequest,
+    StreamError,
+    TextDelta,
+    ToolCallDelta,
+    Usage,
+)
 
 
 def data_sse(payload):
@@ -299,4 +308,156 @@ async def test_anthropic_provider_streams_native_events():
         {"input_tokens": 4},
         {"output_tokens": 1},
     ]
+    await provider.aclose()
+
+
+async def test_openai_stream_http_error_is_typed_retryable_and_secret_safe():
+    async def handler(_request):
+        return httpx.Response(429, text='{"error":{"message":"token sk-secret"}}')
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.test/v1/"
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderSpec(type="openai-compatible", base_url="https://example.test/v1"), client
+    )
+
+    with pytest.raises(ProviderHTTPError) as captured:
+        await anext(
+            provider.stream(model(), FusionRequest(messages=[{"role": "user", "content": "hi"}]))
+        )
+
+    assert captured.value.status_code == 429
+    assert captured.value.code == "upstream_rate_limited"
+    assert captured.value.retryable is True
+    assert "sk-secret" not in str(captured.value)
+    await provider.aclose()
+
+
+async def test_openai_initial_malformed_stream_event_is_protocol_error():
+    async def handler(_request):
+        return httpx.Response(200, content="data: not-json\n\n")
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.test/v1/"
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderSpec(type="openai-compatible", base_url="https://example.test/v1"), client
+    )
+
+    with pytest.raises(ProviderProtocolError):
+        await anext(
+            provider.stream(model(), FusionRequest(messages=[{"role": "user", "content": "hi"}]))
+        )
+    await provider.aclose()
+
+
+async def test_openai_midstream_protocol_failure_becomes_terminal_event():
+    async def handler(_request):
+        return httpx.Response(
+            200,
+            content=data_sse({"choices": [{"delta": {"content": "partial"}}]})
+            + "data: not-json\n\n",
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.test/v1/"
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderSpec(type="openai-compatible", base_url="https://example.test/v1"), client
+    )
+    events = [
+        event
+        async for event in provider.stream(
+            model(), FusionRequest(messages=[{"role": "user", "content": "hi"}])
+        )
+    ]
+
+    assert events == [
+        TextDelta("partial"),
+        StreamError(
+            "upstream provider emitted malformed stream JSON",
+            code="provider_protocol_error",
+        ),
+    ]
+    await provider.aclose()
+
+
+async def test_openai_stream_without_finish_becomes_terminal_protocol_error():
+    async def handler(_request):
+        return httpx.Response(
+            200,
+            content=data_sse({"choices": [{"delta": {"content": "partial"}}]}) + data_sse("[DONE]"),
+        )
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.test/v1/"
+    )
+    provider = OpenAICompatibleProvider(
+        ProviderSpec(type="openai-compatible", base_url="https://example.test/v1"), client
+    )
+    events = [
+        event
+        async for event in provider.stream(
+            model(), FusionRequest(messages=[{"role": "user", "content": "hi"}])
+        )
+    ]
+
+    assert events == [
+        TextDelta("partial"),
+        StreamError(
+            "upstream provider ended without a finish event",
+            code="provider_protocol_error",
+        ),
+    ]
+    await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "base_url", "body"),
+    [
+        (
+            "openai-compatible",
+            "https://example.test/v1",
+            data_sse({"error": {"message": "do not expose me", "code": "overloaded"}}),
+        ),
+        (
+            "anthropic-compatible",
+            "https://anthropic.test/v1",
+            event_sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": {"type": "overloaded_error", "message": "do not expose me"},
+                },
+            ),
+        ),
+    ],
+)
+async def test_provider_body_error_becomes_secret_safe_terminal_event(
+    provider_type, base_url, body
+):
+    async def handler(_request):
+        return httpx.Response(200, content=body)
+
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url=base_url.rstrip("/") + "/"
+    )
+    provider_class = (
+        OpenAICompatibleProvider
+        if provider_type == "openai-compatible"
+        else AnthropicCompatibleProvider
+    )
+    provider = provider_class(ProviderSpec(type=provider_type, base_url=base_url), client)
+    events = [
+        event
+        async for event in provider.stream(
+            model(), FusionRequest(messages=[{"role": "user", "content": "hi"}])
+        )
+    ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], StreamError)
+    assert events[0].message == "upstream provider stream failed"
+    assert "do not expose me" not in events[0].message
     await provider.aclose()

@@ -102,6 +102,27 @@ mode. Protocol translation stays at the gateway boundary and must not own
 routing. A provider without `stream` fails a streaming request visibly instead
 of silently falling back to buffered output.
 
+The canonical stream is provider-neutral: emit non-empty `TextDelta` and
+`ToolCallDelta` events, then exactly one `Finish`; an optional `Usage` may
+follow. If an error happens after deltas have started, emit one terminal,
+secret-safe `StreamError` instead of throwing and breaking the client SSE. If
+the request fails before the first event, raise a typed `ProviderError`. Plugin
+authors can freeze this contract in their own test suite:
+
+```python
+from fusion_runtime.conformance import assert_stream_conforms, collect_stream
+
+events = await collect_stream(provider.stream(model, request))
+assert_stream_conforms(events)
+```
+
+The runtime prefetches one canonical event before sending HTTP streaming
+headers. This preserves real main-model streaming while allowing connection,
+authentication, rate-limit, and initial protocol failures to return normal JSON
+errors. The OpenAI Chat, OpenAI Responses, and Anthropic Messages mappings are
+covered by deterministic protocol tests, including cancellation and terminal
+errors.
+
 ## DeepSeek Harness
 
 [`integrations/deepseek-harness`](integrations/deepseek-harness) is a real

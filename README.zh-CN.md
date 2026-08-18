@@ -23,6 +23,22 @@ Fusion MoA 是一个面向 coding agent 的、模型/GPU/harness 无关的 MoA
 工具参数、结束原因和 usage 增量映射到客户端协议，不等待完整答案。专家输出不会进入
 公共流；不支持原生流式的第三方 provider 会显式失败，不会静默退回伪流式。
 
+第三方 provider 的规范化流应发送非空 `TextDelta` / `ToolCallDelta`，再发送且只
+发送一个 `Finish`，其后可选发送 `Usage`。若已经输出增量后发生故障，应发送一个
+终止型、不得含密钥的 `StreamError`；若首事件之前就失败，则抛出类型化的
+`ProviderError`。插件作者可以把这项契约固化到自己的测试中：
+
+```python
+from fusion_runtime.conformance import assert_stream_conforms, collect_stream
+
+events = await collect_stream(provider.stream(model, request))
+assert_stream_conforms(events)
+```
+
+运行时会在发送 HTTP 流式响应头前预取一个规范化事件，因此连接、鉴权、限流以及
+初始协议错误仍能返回普通 JSON 错误；已经开始的流则按 Chat、Responses 或
+Anthropic Messages 各自的原生错误事件正常终止。预取不会缓冲完整回答。
+
 ## 快速开始
 
 ```bash

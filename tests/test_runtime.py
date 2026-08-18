@@ -1,6 +1,9 @@
 import asyncio
 
+import pytest
+
 from fusion_runtime.config import FusionSpec
+from fusion_runtime.errors import ProviderHTTPError
 from fusion_runtime.plugins import PluginRegistry
 from fusion_runtime.runtime import FusionRuntime
 from fusion_runtime.types import Finish, FusionRequest, ModelResponse, TextDelta
@@ -74,7 +77,9 @@ async def test_native_stream_consults_critic_before_streaming_main_once():
     runtime = make_runtime()
     stream = await runtime.stream(FusionRequest(messages=[{"role": "user", "content": "fix"}]))
     provider = runtime._providers["fake"]
-    assert [call[0] for call in provider.calls] == ["critic"]
+    # Runtime prefetches one canonical event so connection failures are still
+    # returned as an HTTP error before gateway streaming headers are sent.
+    assert [call[0] for call in provider.calls] == ["critic", "stream:main"]
     events = [event async for event in stream.events]
     assert [call[0] for call in provider.calls] == ["critic", "stream:main"]
     assert [event.text for event in events if isinstance(event, TextDelta)] == ["do", "ne"]
@@ -216,3 +221,76 @@ async def test_stream_cancellation_closes_provider_and_releases_concurrency():
     assert runtime._providers["p"].stream_closed is True
     result = await asyncio.wait_for(runtime.call_model("main", request), timeout=0.1)
     assert result.content == "after cancellation"
+
+
+async def test_prefetched_stream_can_close_before_consumer_reads_first_event():
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {"p": {"type": "cancellable", "base_url": "http://unused"}},
+            "models": {
+                "main": {
+                    "provider": "p",
+                    "model": "main",
+                    "context_window": 100,
+                    "max_concurrency": 1,
+                }
+            },
+            "pools": {"coding": {"main": "main"}},
+            "serve": {"pool": "coding"},
+        }
+    )
+    registry = PluginRegistry()
+    registry.register("providers", "cancellable", CancellableProvider)
+    runtime = FusionRuntime(spec, registry)
+    request = FusionRequest(messages=[{"role": "user", "content": "hi"}])
+
+    stream = await runtime.stream(request)
+    await stream.events.aclose()
+
+    assert runtime._providers["p"].stream_closed is True
+    result = await asyncio.wait_for(runtime.call_model("main", request), timeout=0.1)
+    assert result.content == "after cancellation"
+
+
+class FailingStreamProvider:
+    def __init__(self, _spec):
+        pass
+
+    async def complete(self, model, request):
+        return ModelResponse(content="available")
+
+    async def stream(self, model, request):
+        if False:
+            yield TextDelta("unreachable")
+        raise ProviderHTTPError(503)
+
+
+async def test_stream_prefetch_surfaces_provider_failure_and_releases_concurrency():
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {"p": {"type": "failing", "base_url": "http://unused"}},
+            "models": {
+                "main": {
+                    "provider": "p",
+                    "model": "main",
+                    "context_window": 100,
+                    "max_concurrency": 1,
+                }
+            },
+            "pools": {"coding": {"main": "main"}},
+            "serve": {"pool": "coding"},
+        }
+    )
+    registry = PluginRegistry()
+    registry.register("providers", "failing", FailingStreamProvider)
+    runtime = FusionRuntime(spec, registry)
+    request = FusionRequest(messages=[{"role": "user", "content": "hi"}])
+
+    with pytest.raises(ProviderHTTPError) as captured:
+        await runtime.stream(request)
+
+    assert captured.value.status_code == 503
+    result = await asyncio.wait_for(runtime.call_model("main", request), timeout=0.1)
+    assert result.content == "available"
