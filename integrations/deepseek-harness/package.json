@@ -1,0 +1,24 @@
+{
+  "name": "@fusion-runtime/dsh-plugin",
+  "description": "DeepSeek Harness profile bundle for a Fusion Runtime model pool",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "mixture-of-agents",
+    "coding-agent"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm-pi-ai": "0.1.0-rc.7"
+  }
+}

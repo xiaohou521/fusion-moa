@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class FusionRequest:
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    tool_choice: str | dict[str, Any] | None = None
+    parallel_tool_calls: bool | None = None
+    reasoning_effort: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModelResponse:
+    content: str
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    finish_reason: str = "stop"
+    usage: dict[str, int] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class FusionResult:
+    response: ModelResponse
+    route: str
+    experts_used: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+    trace_id: str = ""
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class ToolCallDelta:
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments: str = ""
+
+
+@dataclass(frozen=True)
+class Finish:
+    reason: str
+
+
+@dataclass(frozen=True)
+class Usage:
+    usage: dict[str, int]
+
+
+ModelStreamEvent = TextDelta | ToolCallDelta | Finish | Usage
+
+
+@dataclass(frozen=True)
+class PreparedCall:
+    model_name: str
+    request: FusionRequest
+    route: str
+    experts_used: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FusionStream:
+    events: AsyncIterator[ModelStreamEvent]
+    route: str
+    experts_used: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+    trace_id: str = ""

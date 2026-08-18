@@ -1,0 +1,23 @@
+# DeepSeek Harness developer-preview profile patch. This reuses the official
+# generic OpenAI-compatible LLM seam; credentials remain environment references.
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      fusion-runtime:
+        displayName: Fusion Runtime
+        apiKeyEnv: FUSION_RUNTIME_API_KEY
+        api: openai-completions
+        baseURL: !!js process.env.FUSION_RUNTIME_BASE_URL ?? 'http://127.0.0.1:18888/v1'
+        defaultContextWindow: 131072
+        defaultMaxTokens: 8192
+        models:
+          - id: fusion-coding
+            name: Fusion Coding
+            contextWindow: 131072
+            maxTokens: 8192
+
+- id: agent-default-model
+  config:
+    provider: fusion-runtime
+    model: fusion-coding

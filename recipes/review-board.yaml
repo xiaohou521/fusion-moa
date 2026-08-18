@@ -1,0 +1,61 @@
+version: fusion/v1
+
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://127.0.0.1:8000/v1
+    api_key_env: LOCAL_MODEL_KEY
+    timeout_seconds: 120
+
+  cloud:
+    type: anthropic-compatible
+    base_url: https://api.anthropic.com/v1
+    api_key_env: ANTHROPIC_API_KEY
+    timeout_seconds: 120
+
+models:
+  executor:
+    provider: local
+    model: my-coding-model
+    context_window: 131072
+    max_output: 8192
+    capabilities: [coding, reasoning]
+    tool_calling: true
+    reasoning: true
+    max_concurrency: 2
+
+  security-reviewer:
+    provider: local
+    model: my-security-model
+    context_window: 65536
+    max_output: 2048
+    capabilities: [security-review]
+    max_concurrency: 2
+
+  test-reviewer:
+    provider: cloud
+    model: my-review-model
+    context_window: 200000
+    max_output: 2048
+    capabilities: [test-design]
+    max_concurrency: 4
+
+pools:
+  coding:
+    main: executor
+    experts:
+      security: security-reviewer
+      tests: test-reviewer
+
+policy:
+  type: review-board
+  max_expert_calls: 2
+  options:
+    expert_max_tokens: 2048
+    max_advice_chars: 12000
+
+serve:
+  model_name: fusion-coding
+  pool: coding
+  protocols: [openai-chat, openai-responses, anthropic-messages]
+  api_key_env: FUSION_RUNTIME_API_KEY
