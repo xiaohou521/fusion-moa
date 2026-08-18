@@ -1,0 +1,14 @@
+{
+  "promote": false,
+  "reasons": [
+    "baseline reproducibility is not verified: single-run pilot; repeat-run determinism was not measured; shared serving caches were warm and were not reset per route; actual USD cost was unavailable; mean_cost_usd is a placeholder",
+    "candidate reproducibility is not verified: single-run pilot; repeat-run determinism was not measured; shared serving caches were warm and were not reset per route; actual USD cost was unavailable; mean_cost_usd is a placeholder",
+    "pass-rate delta -0.066667 is below 0.000000",
+    "candidate improves no gated metric"
+  ],
+  "pass_rate_delta": -0.06666666666666665,
+  "p95_latency_ratio": 1.1320255327214759,
+  "mean_cost_ratio": 1.0,
+  "mean_total_token_ratio": 1.872103785286634,
+  "infrastructure_failure_rate_delta": 0.0
+}

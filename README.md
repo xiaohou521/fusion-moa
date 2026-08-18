@@ -170,6 +170,11 @@ with a reproducible card comparing direct and fusion modes on identical tasks,
 seed, environment, latency, token cost, and infrastructure-failure accounting.
 If a candidate does not clear its declared objective, keep the direct route.
 
+The first [frozen LiveCodeBench pilot](benchmarks/cards/lcb-pilot-2026-08-19/CARD.md)
+did exactly that: the default review board was rejected and the direct route was
+kept. The card contains aggregate evidence and limitations, never private
+deployment configuration or raw model answers.
+
 ## License
 
 Apache-2.0.

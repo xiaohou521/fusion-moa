@@ -1,0 +1,17 @@
+{
+  "recipe": "review-board",
+  "task_set_digest": "2c0d398b9efbfb7c4fa60ac149b07d8061bbed2a32497c62459d327c0ea44816",
+  "environment_digest": "130ce815b2979964e5ef200114e5689eebe069139cb5a5865ca0f19170731de0",
+  "seed": 20260819,
+  "attempted": 15,
+  "passed": 6,
+  "infrastructure_failures": 0,
+  "p95_latency_ms": 329753.107,
+  "mean_cost_usd": 0.0,
+  "mean_total_tokens": 5613.067,
+  "reproducibility_issues": [
+    "single-run pilot; repeat-run determinism was not measured",
+    "shared serving caches were warm and were not reset per route",
+    "actual USD cost was unavailable; mean_cost_usd is a placeholder"
+  ]
+}

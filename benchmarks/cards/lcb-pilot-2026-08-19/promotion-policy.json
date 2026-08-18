@@ -1,0 +1,9 @@
+{
+  "min_attempts": 15,
+  "min_pass_rate_delta": 0.0,
+  "max_p95_latency_ratio": 2.5,
+  "max_mean_cost_ratio": 1.0,
+  "max_mean_token_ratio": 4.0,
+  "max_infrastructure_failure_rate_delta": 0.0,
+  "require_any_improvement": true
+}

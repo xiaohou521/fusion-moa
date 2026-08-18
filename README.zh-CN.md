@@ -85,6 +85,10 @@ fusion-runtime-gate --baseline direct.json --candidate candidate.json
 摘要可记录主模型与全部专家调用的 `mean_total_tokens`，门策略可设置
 `max_mean_token_ratio`；只要 `reproducibility_issues` 非空，晋升就会 fail closed。
 
+第一张 [LiveCodeBench 冻结 pilot 卡](benchmarks/cards/lcb-pilot-2026-08-19/CARD.md)
+据此拒绝了默认 review-board，继续保留 direct。公开卡只含聚合证据和限制，不含
+私有部署配置或原始模型回答。
+
 DeepSeek Harness 的安装见
 [`integrations/deepseek-harness`](integrations/deepseek-harness)。官方目前处于 developer
 preview，因此插件锁定了兼容版本，不应宣传为 DeepSeek 官方背书。
