@@ -67,6 +67,9 @@ async def test_main_critic_is_read_only_and_main_is_authoritative():
     assert [call[1].seed for call in calls] == [7, 7]
     assert result.response.content == "done"
     assert result.experts_used == ("critic",)
+    assert result.completion.status == "completed"
+    assert result.completion.has_public_output is True
+    assert result.completion.usage_reported is True
 
 
 async def test_missing_critic_falls_back_to_direct():
@@ -86,6 +89,8 @@ async def test_native_stream_consults_critic_before_streaming_main_once():
     assert [call[0] for call in provider.calls] == ["critic", "stream:main"]
     assert [event.text for event in events if isinstance(event, TextDelta)] == ["do", "ne"]
     assert stream.route == "main-critic"
+    assert stream.completion.outcome.status == "completed"
+    assert stream.completion.outcome.has_public_output is True
 
 
 class BoardProvider:
@@ -194,9 +199,7 @@ async def test_anthropic_provider_rejects_nonportable_seed_before_network_call()
                     "base_url": "https://anthropic.test/v1",
                 }
             },
-            "models": {
-                "main": {"provider": "p", "model": "main", "context_window": 100}
-            },
+            "models": {"main": {"provider": "p", "model": "main", "context_window": 100}},
             "pools": {"coding": {"main": "main"}},
             "serve": {"pool": "coding"},
         }
@@ -249,6 +252,8 @@ async def test_stream_cancellation_closes_provider_and_releases_concurrency():
     assert await anext(stream.events) == TextDelta("first")
     await stream.events.aclose()
     assert runtime._providers["p"].stream_closed is True
+    assert stream.completion.outcome.status == "cancelled"
+    assert stream.completion.outcome.has_public_output is True
     result = await asyncio.wait_for(runtime.call_model("main", request), timeout=0.1)
     assert result.content == "after cancellation"
 
@@ -279,6 +284,8 @@ async def test_prefetched_stream_can_close_before_consumer_reads_first_event():
     await stream.events.aclose()
 
     assert runtime._providers["p"].stream_closed is True
+    assert stream.completion.outcome.status == "cancelled"
+    assert stream.completion.outcome.has_public_output is False
     result = await asyncio.wait_for(runtime.call_model("main", request), timeout=0.1)
     assert result.content == "after cancellation"
 

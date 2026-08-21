@@ -90,6 +90,35 @@ def test_anthropic_messages_contract():
     assert response.json()["content"] == [{"type": "text", "text": "hello"}]
 
 
+def test_anthropic_system_context_is_folded_into_one_leading_message():
+    runtime = StubRuntime()
+    client = TestClient(create_app(runtime))
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "fusion-coding",
+            "system": [{"type": "text", "text": "top-level"}],
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "developer", "content": "replayed developer context"},
+                {"role": "assistant", "content": "middle"},
+                {"role": "system", "content": "replayed system context"},
+                {"role": "user", "content": "last"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert runtime.requests[0].messages == [
+        {
+            "role": "system",
+            "content": ("top-level\n\nreplayed developer context\n\nreplayed system context"),
+        },
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "middle"},
+        {"role": "user", "content": "last"},
+    ]
+
+
 def test_responses_contract():
     client = TestClient(create_app(StubRuntime()))
     response = client.post("/v1/responses", json={"model": "fusion-coding", "input": "hi"})

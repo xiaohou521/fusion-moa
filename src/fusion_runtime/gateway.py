@@ -379,13 +379,26 @@ def _anthropic_messages(items: Any, system: Any) -> list[dict[str, Any]]:
     if not isinstance(items, list):
         raise HTTPException(status_code=422, detail="messages must be a list")
     messages: list[dict[str, Any]] = []
+    system_parts: list[str] = []
     if system:
-        messages.append({"role": "system", "content": _anthropic_text(system)})
+        system_text = _anthropic_text(system)
+        if system_text:
+            system_parts.append(system_text)
     for item in items:
         if not isinstance(item, dict):
             raise HTTPException(status_code=422, detail="messages must contain objects")
         role = item.get("role")
         content = item.get("content", "")
+        # Anthropic normally carries system context in the top-level `system`
+        # field, but harnesses can replay system/developer messages inside a
+        # resumed conversation. OpenAI-compatible chat templates commonly
+        # reject those roles anywhere except the first message, so fold every
+        # such block into the single leading system message.
+        if role in {"system", "developer"}:
+            system_text = _anthropic_text(content)
+            if system_text:
+                system_parts.append(system_text)
+            continue
         if isinstance(content, str):
             messages.append({"role": role, "content": content})
             continue
@@ -440,7 +453,12 @@ def _anthropic_messages(items: Any, system: Any) -> list[dict[str, Any]]:
                 message["tool_calls"] = tool_calls
             messages.append(message)
         messages.extend(tool_results)
-    return messages
+    if not system_parts:
+        return messages
+    return [
+        {"role": "system", "content": "\n\n".join(system_parts)},
+        *messages,
+    ]
 
 
 def _anthropic_tools(tools: Any) -> list[dict[str, Any]]:

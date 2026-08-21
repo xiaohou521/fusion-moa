@@ -6,12 +6,20 @@ import inspect
 import uuid
 from collections.abc import AsyncIterator
 
+from .completion import CompletionTracker, classify_response
 from .config import FusionSpec
 from .errors import ProviderProtocolError
 from .plugins import PluginRegistry
 from .policies import DirectPolicy, MainCriticPolicy, ReviewBoardPolicy
 from .providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
-from .types import FusionRequest, FusionResult, FusionStream, ModelResponse, ModelStreamEvent
+from .types import (
+    CompletionRecord,
+    FusionRequest,
+    FusionResult,
+    FusionStream,
+    ModelResponse,
+    ModelStreamEvent,
+)
 
 _trace_id: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
 
@@ -99,6 +107,7 @@ class FusionRuntime:
                 experts_used=prepared.experts_used,
                 fallback_reason=prepared.fallback_reason,
                 trace_id=self.trace_id(),
+                completion=classify_response(response),
             )
         finally:
             _trace_id.reset(token)
@@ -122,12 +131,17 @@ class FusionRuntime:
             except BaseException:
                 await events.aclose()
                 raise
+            completion = CompletionRecord()
+            observed_events = _ObservedStream(
+                _PrefetchedStream(first, events), CompletionTracker(completion)
+            )
             return FusionStream(
-                events=_PrefetchedStream(first, events),
+                events=observed_events,
                 route=prepared.route,
                 experts_used=prepared.experts_used,
                 fallback_reason=prepared.fallback_reason,
                 trace_id=self.trace_id(),
+                completion=completion,
             )
         finally:
             _trace_id.reset(token)
@@ -168,4 +182,38 @@ class _PrefetchedStream:
         if self._closed:
             return
         self._closed = True
+        await self._events.aclose()
+
+
+class _ObservedStream:
+    def __init__(self, events: _PrefetchedStream, tracker: CompletionTracker) -> None:
+        self._events = events
+        self._tracker = tracker
+        self._closed = False
+
+    def __aiter__(self) -> _ObservedStream:
+        return self
+
+    async def __anext__(self) -> ModelStreamEvent:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            event = await anext(self._events)
+        except StopAsyncIteration:
+            self._tracker.end()
+            raise
+        except asyncio.CancelledError:
+            self._tracker.cancel()
+            raise
+        except BaseException:
+            self._tracker.end()
+            raise
+        self._tracker.observe(event)
+        return event
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._tracker.cancel()
         await self._events.aclose()

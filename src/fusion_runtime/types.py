@@ -28,12 +28,36 @@ class ModelResponse:
 
 
 @dataclass(frozen=True)
+class CompletionOutcome:
+    """Provider-neutral classification of one authoritative main-model completion."""
+
+    status: str = "pending"
+    finish_reason: str | None = None
+    has_public_output: bool = False
+    has_text_output: bool = False
+    has_tool_call: bool = False
+    has_valid_tool_call: bool = False
+    tool_call_count: int = 0
+    usage_reported: bool = False
+    infrastructure_failure: bool = False
+    failure_tags: tuple[str, ...] = ()
+
+
+@dataclass
+class CompletionRecord:
+    """Mutable holder whose value is replaced with immutable stream snapshots."""
+
+    outcome: CompletionOutcome = field(default_factory=CompletionOutcome)
+
+
+@dataclass(frozen=True)
 class FusionResult:
     response: ModelResponse
     route: str
     experts_used: tuple[str, ...] = ()
     fallback_reason: str | None = None
     trace_id: str = ""
+    completion: CompletionOutcome = field(default_factory=CompletionOutcome, repr=False)
 
 
 @dataclass(frozen=True)
@@ -85,3 +109,4 @@ class FusionStream:
     experts_used: tuple[str, ...] = ()
     fallback_reason: str | None = None
     trace_id: str = ""
+    completion: CompletionRecord = field(default_factory=CompletionRecord, repr=False)
