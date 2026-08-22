@@ -2,7 +2,31 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
+
+ThinkingMode = Literal["provider-default", "disabled", "bounded"]
+THINKING_MODES: frozenset[str] = frozenset({"provider-default", "disabled", "bounded"})
+
+
+@dataclass(frozen=True)
+class ThinkingConfig:
+    """Provider-neutral thinking controls for one model call."""
+
+    mode: ThinkingMode = "provider-default"
+    budget_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in THINKING_MODES:
+            raise ValueError(f"unknown thinking mode: {self.mode!r}")
+        if self.mode == "bounded":
+            if (
+                not isinstance(self.budget_tokens, int)
+                or isinstance(self.budget_tokens, bool)
+                or self.budget_tokens <= 0
+            ):
+                raise ValueError("bounded thinking requires a positive budget_tokens")
+        elif self.budget_tokens is not None:
+            raise ValueError("budget_tokens is only valid for bounded thinking")
 
 
 @dataclass(frozen=True)
@@ -12,10 +36,17 @@ class FusionRequest:
     tool_choice: str | dict[str, Any] | None = None
     parallel_tool_calls: bool | None = None
     reasoning_effort: str | None = None
+    thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
     max_tokens: int | None = None
     temperature: float | None = None
     seed: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.reasoning_effort is not None and self.thinking.mode != "provider-default":
+            raise ValueError(
+                "reasoning_effort cannot be combined with a normalized thinking override"
+            )
 
 
 @dataclass(frozen=True)

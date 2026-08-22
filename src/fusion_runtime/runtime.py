@@ -8,11 +8,12 @@ from collections.abc import AsyncIterator
 
 from .completion import CompletionTracker, classify_response
 from .config import FusionSpec
-from .errors import ProviderProtocolError
+from .errors import CapabilityError, ProviderProtocolError
 from .plugins import PluginRegistry
 from .policies import DirectPolicy, MainCriticPolicy, ReviewBoardPolicy
 from .providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
 from .types import (
+    THINKING_MODES,
     CompletionRecord,
     FusionRequest,
     FusionResult,
@@ -22,10 +23,6 @@ from .types import (
 )
 
 _trace_id: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
-
-
-class CapabilityError(ValueError):
-    """The selected model does not declare a capability required by a request."""
 
 
 class FusionRuntime:
@@ -65,6 +62,35 @@ class FusionRuntime:
         if request.seed is not None and provider_type == "anthropic-compatible":
             raise CapabilityError(
                 "seed is not portable to the built-in anthropic-compatible provider"
+            )
+        thinking = request.thinking
+        if thinking.mode not in model.generation.thinking.modes:
+            raise CapabilityError(
+                f"model {name!r} does not declare thinking mode {thinking.mode!r}"
+            )
+        if thinking.mode == "bounded" and thinking.budget_tokens is not None:
+            requested_limit = (
+                request.max_tokens if request.max_tokens is not None else model.max_output
+            )
+            output_limit = min(requested_limit, model.max_output)
+            if thinking.budget_tokens > output_limit:
+                raise CapabilityError(
+                    f"thinking budget {thinking.budget_tokens} exceeds output limit "
+                    f"{output_limit} for model {name!r}"
+                )
+        provider = self._providers[model.provider]
+        provider_modes = getattr(provider, "thinking_modes", frozenset({"provider-default"}))
+        if (
+            not isinstance(provider_modes, (set, frozenset))
+            or not provider_modes
+            or not provider_modes <= THINKING_MODES
+        ):
+            raise CapabilityError(
+                f"provider {model.provider!r} has an invalid thinking_modes declaration"
+            )
+        if thinking.mode not in provider_modes:
+            raise CapabilityError(
+                f"provider {model.provider!r} does not map thinking mode {thinking.mode!r}"
             )
 
     async def call_model(self, name: str, request: FusionRequest) -> ModelResponse:

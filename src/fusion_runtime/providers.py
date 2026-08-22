@@ -7,7 +7,13 @@ from typing import Any, Protocol
 import httpx
 
 from .config import ModelSpec, ProviderSpec
-from .errors import ProviderError, ProviderHTTPError, ProviderProtocolError, ProviderTransportError
+from .errors import (
+    CapabilityError,
+    ProviderError,
+    ProviderHTTPError,
+    ProviderProtocolError,
+    ProviderTransportError,
+)
 from .types import (
     Finish,
     FusionRequest,
@@ -15,12 +21,15 @@ from .types import (
     ModelStreamEvent,
     StreamError,
     TextDelta,
+    ThinkingMode,
     ToolCallDelta,
     Usage,
 )
 
 
 class Provider(Protocol):
+    thinking_modes: frozenset[ThinkingMode]
+
     async def complete(self, model: ModelSpec, request: FusionRequest) -> ModelResponse: ...
     def stream(
         self, model: ModelSpec, request: FusionRequest
@@ -29,6 +38,8 @@ class Provider(Protocol):
 
 
 class OpenAICompatibleProvider:
+    thinking_modes: frozenset[ThinkingMode] = frozenset({"provider-default"})
+
     def __init__(self, spec: ProviderSpec, client: httpx.AsyncClient | None = None) -> None:
         headers = dict(spec.headers)
         if spec.api_key():
@@ -172,8 +183,9 @@ class OpenAICompatibleProvider:
             return
         raise ProviderProtocolError("upstream provider returned an empty stream")
 
-    @staticmethod
-    def _payload(model: ModelSpec, request: FusionRequest) -> dict[str, object]:
+    @classmethod
+    def _payload(cls, model: ModelSpec, request: FusionRequest) -> dict[str, object]:
+        _require_supported_thinking(cls.thinking_modes, request)
         payload: dict[str, object] = {
             "model": model.model,
             "messages": request.messages,
@@ -197,6 +209,8 @@ class OpenAICompatibleProvider:
 
 
 class AnthropicCompatibleProvider:
+    thinking_modes: frozenset[ThinkingMode] = frozenset({"provider-default"})
+
     def __init__(self, spec: ProviderSpec, client: httpx.AsyncClient | None = None) -> None:
         headers = {"anthropic-version": "2023-06-01", **spec.headers}
         if spec.api_key():
@@ -368,8 +382,9 @@ class AnthropicCompatibleProvider:
             return
         raise ProviderProtocolError("upstream provider returned an empty stream")
 
-    @staticmethod
-    def _payload(model: ModelSpec, request: FusionRequest) -> dict[str, object]:
+    @classmethod
+    def _payload(cls, model: ModelSpec, request: FusionRequest) -> dict[str, object]:
+        _require_supported_thinking(cls.thinking_modes, request)
         system = "\n\n".join(
             _content_text(item.get("content", ""))
             for item in request.messages
@@ -398,6 +413,11 @@ class AnthropicCompatibleProvider:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def _require_supported_thinking(modes: frozenset[ThinkingMode], request: FusionRequest) -> None:
+    if request.thinking.mode not in modes:
+        raise CapabilityError(f"provider does not map thinking mode {request.thinking.mode!r}")
 
 
 def _anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

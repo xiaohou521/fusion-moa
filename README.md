@@ -76,6 +76,25 @@ A recipe has five explicit layers:
 4. `policy`: orchestration, expert-call budget, and policy-specific options;
 5. `serve`: one public model name and enabled client protocols.
 
+Thinking behavior is a declared generation capability, never inferred from a
+model id:
+
+```yaml
+models:
+  main:
+    # provider, model, context_window, ...
+    generation:
+      thinking:
+        modes: [provider-default, disabled, bounded]
+      final_answer_reserve: true
+```
+
+`provider-default` sends no normalized thinking override. `disabled` and
+`bounded` may be used only when both the model declaration and its provider
+plugin support them; bounded requests also carry a positive token budget no
+larger than the effective output limit. This capability is separate from the
+OpenAI-specific `reasoning_effort` passthrough.
+
 Experts are advisory-only. They receive no coding tools, their output is
 bounded and marked untrusted, and only the main model can produce the public
 answer or tool call. A failed expert is surfaced through `x-fusion-fallback`;
@@ -95,7 +114,14 @@ my-policy = "my_package:MyPolicy"
 ```
 
 A provider implements `async complete(model, request) -> ModelResponse` and
-`stream(model, request) -> AsyncIterator[ModelStreamEvent]`. A policy implements
+`stream(model, request) -> AsyncIterator[ModelStreamEvent]`. It publishes the
+normalized modes it actually maps, for example
+`thinking_modes = frozenset({"provider-default", "bounded"})`; declaring a mode
+is a promise to translate `request.thinking` to the upstream protocol. An
+unsupported mode must raise `CapabilityError`, not be dropped. The built-in
+generic providers intentionally publish only `provider-default`.
+
+A policy implements
 `async prepare(runtime, pool_name, request) -> PreparedCall`: experts finish in
 `prepare`, while the runtime owns the sole final call in complete or streaming
 mode. Protocol translation stays at the gateway boundary and must not own

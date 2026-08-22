@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 
+class CapabilityError(ValueError):
+    """A model or provider cannot honor a requested capability without guessing."""
+
+
 class ProviderError(RuntimeError):
     """Secret-safe failure raised by a provider implementation."""
 

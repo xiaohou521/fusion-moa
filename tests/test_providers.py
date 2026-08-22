@@ -4,13 +4,14 @@ import httpx
 import pytest
 
 from fusion_runtime.config import ModelSpec, ProviderSpec
-from fusion_runtime.errors import ProviderHTTPError, ProviderProtocolError
+from fusion_runtime.errors import CapabilityError, ProviderHTTPError, ProviderProtocolError
 from fusion_runtime.providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
 from fusion_runtime.types import (
     Finish,
     FusionRequest,
     StreamError,
     TextDelta,
+    ThinkingConfig,
     ToolCallDelta,
     Usage,
 )
@@ -35,6 +36,17 @@ def model(*, tool_calling=True):
             "tool_calling": tool_calling,
         }
     )
+
+
+@pytest.mark.parametrize("provider_class", [OpenAICompatibleProvider, AnthropicCompatibleProvider])
+def test_builtin_generic_providers_reject_unmapped_thinking_modes(provider_class):
+    request = FusionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        thinking=ThinkingConfig(mode="disabled"),
+    )
+
+    with pytest.raises(CapabilityError, match="does not map thinking mode 'disabled'"):
+        provider_class._payload(model(), request)
 
 
 async def test_openai_provider_preserves_tools_and_tool_calls():

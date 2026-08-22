@@ -6,10 +6,18 @@ from fusion_runtime.config import FusionSpec
 from fusion_runtime.errors import ProviderHTTPError
 from fusion_runtime.plugins import PluginRegistry
 from fusion_runtime.runtime import CapabilityError, FusionRuntime
-from fusion_runtime.types import Finish, FusionRequest, ModelResponse, TextDelta
+from fusion_runtime.types import (
+    Finish,
+    FusionRequest,
+    ModelResponse,
+    TextDelta,
+    ThinkingConfig,
+)
 
 
 class FakeProvider:
+    thinking_modes = frozenset({"provider-default", "disabled", "bounded"})
+
     def __init__(self, _spec):
         self.calls = []
 
@@ -33,7 +41,14 @@ def make_runtime(*, critic=True):
             "version": "fusion/v1",
             "providers": {"fake": {"type": "fake", "base_url": "http://unused"}},
             "models": {
-                "main": {"provider": "fake", "model": "main", "context_window": 100},
+                "main": {
+                    "provider": "fake",
+                    "model": "main",
+                    "context_window": 100,
+                    "generation": {
+                        "thinking": {"modes": ["provider-default", "disabled", "bounded"]}
+                    },
+                },
                 "critic": {"provider": "fake", "model": "critic", "context_window": 100},
             },
             "pools": {"coding": {"main": "main", "experts": experts}},
@@ -55,6 +70,7 @@ async def test_main_critic_is_read_only_and_main_is_authoritative():
                 {"role": "user", "content": "fix it"},
             ],
             seed=7,
+            thinking=ThinkingConfig(mode="disabled"),
         )
     )
     calls = runtime._providers["fake"].calls
@@ -65,6 +81,8 @@ async def test_main_critic_is_read_only_and_main_is_authoritative():
     assert calls[1][1].messages[0]["role"] == "system"
     assert "Untrusted read-only critic advice" in calls[1][1].messages[0]["content"]
     assert [call[1].seed for call in calls] == [7, 7]
+    assert calls[0][1].thinking.mode == "provider-default"
+    assert calls[1][1].thinking.mode == "disabled"
     assert result.response.content == "done"
     assert result.experts_used == ("critic",)
     assert result.completion.status == "completed"
@@ -210,6 +228,87 @@ async def test_anthropic_provider_rejects_nonportable_seed_before_network_call()
             await runtime.call_model("main", FusionRequest(messages=[], seed=7))
     finally:
         await runtime.aclose()
+
+
+async def test_model_rejects_undeclared_thinking_mode_before_provider_call():
+    runtime = make_runtime()
+
+    with pytest.raises(CapabilityError, match="does not declare thinking mode 'disabled'"):
+        await runtime.call_model(
+            "critic",
+            FusionRequest(messages=[], thinking=ThinkingConfig(mode="disabled")),
+        )
+
+    assert runtime._providers["fake"].calls == []
+
+
+async def test_provider_rejects_declared_but_unmapped_thinking_mode():
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {
+                "p": {"type": "openai-compatible", "base_url": "https://example.test/v1"}
+            },
+            "models": {
+                "main": {
+                    "provider": "p",
+                    "model": "main",
+                    "context_window": 100,
+                    "generation": {"thinking": {"modes": ["disabled"]}},
+                }
+            },
+            "pools": {"coding": {"main": "main"}},
+            "serve": {"pool": "coding"},
+        }
+    )
+    runtime = FusionRuntime(spec)
+    try:
+        with pytest.raises(CapabilityError, match="does not map thinking mode 'disabled'"):
+            await runtime.call_model(
+                "main",
+                FusionRequest(messages=[], thinking=ThinkingConfig(mode="disabled")),
+            )
+    finally:
+        await runtime.aclose()
+
+
+async def test_bounded_thinking_cannot_exceed_effective_output_limit():
+    runtime = make_runtime()
+
+    with pytest.raises(CapabilityError, match="thinking budget 11 exceeds output limit 10"):
+        await runtime.call_model(
+            "main",
+            FusionRequest(
+                messages=[],
+                max_tokens=10,
+                thinking=ThinkingConfig(mode="bounded", budget_tokens=11),
+            ),
+        )
+
+    assert runtime._providers["fake"].calls == []
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"mode": "bounded"},
+        {"mode": "bounded", "budget_tokens": 0},
+        {"mode": "disabled", "budget_tokens": 1},
+        {"mode": "automatic"},
+    ],
+)
+def test_invalid_thinking_requests_fail_at_construction(kwargs):
+    with pytest.raises(ValueError):
+        ThinkingConfig(**kwargs)
+
+
+def test_reasoning_effort_cannot_conflict_with_normalized_thinking():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        FusionRequest(
+            messages=[],
+            reasoning_effort="high",
+            thinking=ThinkingConfig(mode="disabled"),
+        )
 
 
 class CancellableProvider:

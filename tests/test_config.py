@@ -114,3 +114,62 @@ def test_invalid_expert_token_budget_is_rejected_at_load_time() -> None:
                 "serve": {"pool": "coding"},
             }
         )
+
+
+def test_generation_capabilities_are_explicit_and_strict() -> None:
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {"p": {"type": "openai-compatible", "base_url": "http://localhost/v1"}},
+            "models": {
+                "main": {
+                    "provider": "p",
+                    "model": "m",
+                    "context_window": 100,
+                    "generation": {
+                        "thinking": {"modes": ["provider-default", "disabled", "bounded"]},
+                        "final_answer_reserve": True,
+                    },
+                }
+            },
+            "pools": {"coding": {"main": "main"}},
+            "serve": {"pool": "coding"},
+        }
+    )
+
+    generation = spec.models["main"].generation
+    assert generation.thinking.modes == {"provider-default", "disabled", "bounded"}
+    assert generation.final_answer_reserve is True
+
+
+@pytest.mark.parametrize(
+    "thinking",
+    [
+        {"modes": []},
+        {"modes": ["automatic"]},
+        {"modes": ["provider-default"], "enable_thinking": False},
+    ],
+)
+def test_invalid_generation_capabilities_fail_closed(thinking) -> None:
+    with pytest.raises(ValidationError):
+        FusionSpec.model_validate(
+            {
+                "version": "fusion/v1",
+                "providers": {
+                    "p": {
+                        "type": "openai-compatible",
+                        "base_url": "http://localhost/v1",
+                    }
+                },
+                "models": {
+                    "main": {
+                        "provider": "p",
+                        "model": "m",
+                        "context_window": 100,
+                        "generation": {"thinking": thinking},
+                    }
+                },
+                "pools": {"coding": {"main": "main"}},
+                "serve": {"pool": "coding"},
+            }
+        )

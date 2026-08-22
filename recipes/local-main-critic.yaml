@@ -16,6 +16,10 @@ models:
     capabilities: [coding, reasoning]
     tool_calling: true
     reasoning: true
+    generation:
+      thinking:
+        modes: [provider-default]
+      final_answer_reserve: false
     max_concurrency: 2
 
   critic:

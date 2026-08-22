@@ -69,6 +69,28 @@ Model:    fusion-coding
 专家角色，`policy` 定义编排与预算，`serve` 定义公共模型名和协议。核心不会读取
 GPU 型号，也不会从模型名字猜能力；本地模型、云 API 和未来托管专家池可以混用。
 
+thinking 必须作为生成能力显式声明，不能从模型 id 推断：
+
+```yaml
+models:
+  main:
+    # provider、model、context_window 等字段
+    generation:
+      thinking:
+        modes: [provider-default, disabled, bounded]
+      final_answer_reserve: true
+```
+
+`provider-default` 不发送规范化 thinking 覆盖。只有模型声明和 provider 插件同时支持
+时，才可请求 `disabled` 或 `bounded`；bounded 请求还必须提供正整数 token 预算，且
+不能超过有效输出上限。它与 OpenAI 特有的 `reasoning_effort` 透传是两套不同的能力。
+
+第三方 provider 通过类似
+`thinking_modes = frozenset({"provider-default", "bounded"})` 的属性声明自己真正完成
+映射的模式，并负责把 `request.thinking` 翻译成上游协议。声明就是插件合同：不支持时
+必须抛出 `CapabilityError`，不能静默丢弃。内置通用 provider 目前有意只声明
+`provider-default`。
+
 ## 安全边界
 
 专家只提供建议：不拿 coding tools，输出会被限长并标记为不可信；主模型是唯一

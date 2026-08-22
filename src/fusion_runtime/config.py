@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .types import ThinkingMode
+
 ProtocolName = Literal["openai-chat", "openai-responses", "anthropic-messages"]
 _ENV_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
 _SECRET_HEADERS = {"authorization", "proxy-authorization", "x-api-key", "api-key"}
@@ -51,6 +53,15 @@ class ProviderSpec(StrictModel):
         return os.getenv(self.api_key_env) if self.api_key_env else None
 
 
+class ThinkingCapabilities(StrictModel):
+    modes: set[ThinkingMode] = Field(default_factory=lambda: {"provider-default"}, min_length=1)
+
+
+class GenerationCapabilities(StrictModel):
+    thinking: ThinkingCapabilities = Field(default_factory=ThinkingCapabilities)
+    final_answer_reserve: bool = False
+
+
 class ModelCapabilities(StrictModel):
     context_window: int = Field(gt=0)
     max_output: int = Field(default=8192, gt=0)
@@ -58,6 +69,7 @@ class ModelCapabilities(StrictModel):
     capabilities: set[str] = Field(default_factory=set)
     tool_calling: bool = False
     reasoning: bool = False
+    generation: GenerationCapabilities = Field(default_factory=GenerationCapabilities)
     prefix_cache: bool = False
     estimated_tps: float | None = Field(default=None, gt=0)
     max_concurrency: int = Field(default=1, gt=0)
