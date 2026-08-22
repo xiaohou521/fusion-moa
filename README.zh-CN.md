@@ -15,13 +15,15 @@ Fusion MoA 是一个面向 coding agent 的、模型/GPU/harness 无关的 MoA
 - 每个模型独立配置上下文、输出、工具、推理、并发等能力；
 - OpenAI Chat、Responses、Anthropic Messages 三套入口；
 - function/tool call 回环、`/v1/models`、三套协议的最终模型原生 SSE；
+- 同一原生连接内、公共输出前的一次有界空流恢复；
 - provider/policy Python 插件入口；
 - 评测门控的 RSI 晋升命令；
 - 按官方 profile bundle 契约制作、版本锁定的 DeepSeek Harness 插件。
 
-流式请求会先完成有界、只读的专家编排，然后把唯一一次权威主模型调用产生的文本、
-工具参数、结束原因和 usage 增量映射到客户端协议，不等待完整答案。专家输出不会进入
-公共流；不支持原生流式的第三方 provider 会显式失败，不会静默退回伪流式。
+流式请求会先完成有界、只读的专家编排，然后把权威主模型产生的文本增量映射到客户端
+协议，不等待完整答案。专家输出不会进入公共流。如果首轮主模型流完全没有可用公共输出，
+显式开启的恢复策略可以在客户端收到终止事件前，用同一主模型的一次有界流替换它；不支持
+原生流式的第三方 provider 会显式失败，不会静默退回伪流式。
 
 第三方 provider 的规范化流应发送非空 `TextDelta` / `ToolCallDelta`，再发送且只
 发送一个 `Finish`，其后可选发送 `Usage`。若已经输出增量后发生故障，应发送一个
@@ -65,9 +67,10 @@ Base URL: http://127.0.0.1:18888/v1
 Model:    fusion-coding
 ```
 
-配置分为五层：`providers` 定义传输，`models` 声明能力，`pools` 分配主模型和
-专家角色，`policy` 定义编排与预算，`serve` 定义公共模型名和协议。核心不会读取
-GPU 型号，也不会从模型名字猜能力；本地模型、云 API 和未来托管专家池可以混用。
+配置分为六层：`providers` 定义传输，`models` 声明能力，`pools` 分配主模型和
+专家角色，`policy` 定义编排与专家预算，`completion` 定义完成门与恢复预算，`serve`
+定义公共模型名和协议。核心不会读取 GPU 型号，也不会从模型名字猜能力；本地模型、
+云 API 和未来托管专家池可以混用。
 
 thinking 必须作为生成能力显式声明，不能从模型 id 推断：
 
@@ -90,6 +93,31 @@ models:
 映射的模式，并负责把 `request.thinking` 翻译成上游协议。声明就是插件合同：不支持时
 必须抛出 `CapabilityError`，不能静默丢弃。内置通用 provider 目前有意只声明
 `provider-default`。
+
+空完成恢复必须显式开启，并且有硬上限：
+
+```yaml
+completion:
+  require_public_output: true
+  require_tool_or_text: true
+  max_recovery_attempts: 1
+  recovery_max_tokens: 2048
+```
+
+`max_recovery_attempts` 默认是 `0`，所以旧 recipe 不会在升级后改变行为。开启后，只有既
+没有可用文本、也没有有效工具调用的尝试才会被替换；运行时仍调用同一个权威主模型，最多
+一次，不重新运行专家，不重放 provider 的隐藏 reasoning，而且客户端和模型的输出上限
+仍是硬约束。
+
+对于流式请求，前导控制事件、纯空白文本、终止事件和未完成工具调用会暂时停留在一个很小
+的公共输出门内。首个非空白文本 delta 会立即提交；工具调用只有通过完整性校验后才提交。
+一旦提交，运行时绝不重试，因此客户端不会收到重复文本或重复工具执行。首轮为空时，恢复
+流继续使用原来的 Chat、Responses 或 Messages SSE 生命周期，不会缓冲完整回答。
+
+两次调用中已知的 usage 会相加；任何一次缺少 usage，accounting 都不会被标记为完整。
+恢复决定能在响应头之前确定时，会提供 `x-fusion-recovery-attempts` 和
+`x-fusion-recovered`；有界恢复仍无公共输出时还会提供不含敏感信息的
+`x-fusion-recovery-failure`。响应开始后的故障继续使用各客户端协议原生错误事件表达。
 
 ## 安全边界
 

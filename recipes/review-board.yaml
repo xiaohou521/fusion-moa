@@ -58,6 +58,12 @@ policy:
     expert_max_tokens: 2048
     max_advice_chars: 12000
 
+completion:
+  require_public_output: true
+  require_tool_or_text: true
+  max_recovery_attempts: 1
+  recovery_max_tokens: 2048
+
 serve:
   model_name: fusion-coding
   pool: coding

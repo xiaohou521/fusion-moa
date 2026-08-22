@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from fusion_runtime.gateway import create_app
@@ -6,6 +7,7 @@ from fusion_runtime.types import (
     FusionResult,
     FusionStream,
     ModelResponse,
+    RecoveryOutcome,
     TextDelta,
     ToolCallDelta,
     Usage,
@@ -13,7 +15,7 @@ from fusion_runtime.types import (
 
 
 class StubRuntime:
-    def __init__(self, *, protocols=None, response=None):
+    def __init__(self, *, protocols=None, response=None, recovery=None):
         from fusion_runtime.config import FusionSpec
 
         self.spec = FusionSpec.model_validate(
@@ -32,6 +34,7 @@ class StubRuntime:
         )
         self.requests = []
         self.response = response or ModelResponse(content="hello", usage={"total_tokens": 3})
+        self.recovery = recovery or RecoveryOutcome()
 
     async def complete(self, request):
         assert request.messages
@@ -40,6 +43,7 @@ class StubRuntime:
             response=self.response,
             route="direct",
             trace_id="trace123",
+            recovery=self.recovery,
         )
 
     async def stream(self, request):
@@ -88,6 +92,33 @@ def test_anthropic_messages_contract():
     )
     assert response.status_code == 200
     assert response.json()["content"] == [{"type": "text", "text": "hello"}]
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/v1/chat/completions",
+            {"model": "fusion-coding", "messages": [{"role": "user", "content": "hi"}]},
+        ),
+        ("/v1/responses", {"model": "fusion-coding", "input": "hi"}),
+        (
+            "/v1/messages",
+            {"model": "fusion-coding", "messages": [{"role": "user", "content": "hi"}]},
+        ),
+    ],
+)
+def test_nonstream_protocols_surface_recovery_headers(path, payload):
+    runtime = StubRuntime(
+        recovery=RecoveryOutcome(attempts=1, succeeded=False, failure_code="final_answer_missing")
+    )
+
+    response = TestClient(create_app(runtime)).post(path, json=payload)
+
+    assert response.status_code == 200
+    assert response.headers["x-fusion-recovery-attempts"] == "1"
+    assert response.headers["x-fusion-recovered"] == "false"
+    assert response.headers["x-fusion-recovery-failure"] == "final_answer_missing"
 
 
 def test_anthropic_system_context_is_folded_into_one_leading_message():

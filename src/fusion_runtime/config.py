@@ -109,6 +109,23 @@ class PolicySpec(StrictModel):
         return self
 
 
+class CompletionSpec(StrictModel):
+    require_public_output: bool = True
+    require_tool_or_text: bool = True
+    max_recovery_attempts: int = Field(default=0, ge=0, le=1)
+    recovery_max_tokens: int = Field(default=2048, gt=0, le=32_768)
+
+    @model_validator(mode="after")
+    def validate_recovery_gate(self) -> CompletionSpec:
+        if (
+            self.max_recovery_attempts > 0
+            and not self.require_public_output
+            and not self.require_tool_or_text
+        ):
+            raise ValueError("recovery requires require_public_output or require_tool_or_text")
+        return self
+
+
 class ServeSpec(StrictModel):
     model_name: str = Field(default="fusion-coding", min_length=1)
     pool: str
@@ -124,6 +141,7 @@ class FusionSpec(StrictModel):
     models: dict[str, ModelSpec]
     pools: dict[str, PoolSpec]
     policy: PolicySpec = Field(default_factory=PolicySpec)
+    completion: CompletionSpec = Field(default_factory=CompletionSpec)
     serve: ServeSpec
 
     @model_validator(mode="after")

@@ -1212,4 +1212,11 @@ def _trace_headers(result: FusionResult | FusionStream) -> dict[str, str]:
     headers = {"x-fusion-trace-id": result.trace_id, "x-fusion-route": result.route}
     if result.fallback_reason:
         headers["x-fusion-fallback"] = result.fallback_reason[:200]
+    recovery = getattr(result, "recovery", None)
+    recovery = getattr(recovery, "outcome", recovery)
+    if recovery is not None and recovery.attempts:
+        headers["x-fusion-recovery-attempts"] = str(recovery.attempts)
+        headers["x-fusion-recovered"] = str(recovery.succeeded).lower()
+        if recovery.failure_code:
+            headers["x-fusion-recovery-failure"] = recovery.failure_code[:100]
     return headers

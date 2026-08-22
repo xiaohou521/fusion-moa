@@ -173,3 +173,56 @@ def test_invalid_generation_capabilities_fail_closed(thinking) -> None:
                 "serve": {"pool": "coding"},
             }
         )
+
+
+def test_empty_output_recovery_is_bounded_and_opt_in() -> None:
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {"p": {"type": "openai-compatible", "base_url": "http://localhost/v1"}},
+            "models": {"main": {"provider": "p", "model": "m", "context_window": 100}},
+            "pools": {"coding": {"main": "main"}},
+            "completion": {
+                "require_public_output": True,
+                "require_tool_or_text": True,
+                "max_recovery_attempts": 1,
+                "recovery_max_tokens": 512,
+            },
+            "serve": {"pool": "coding"},
+        }
+    )
+
+    assert spec.completion.max_recovery_attempts == 1
+    assert spec.completion.recovery_max_tokens == 512
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [
+        {"max_recovery_attempts": 2},
+        {"max_recovery_attempts": 1, "recovery_max_tokens": 0},
+        {
+            "max_recovery_attempts": 1,
+            "require_public_output": False,
+            "require_tool_or_text": False,
+        },
+        {"max_recovery_attempts": 1, "retry_forever": True},
+    ],
+)
+def test_invalid_completion_policy_fails_closed(completion) -> None:
+    with pytest.raises(ValidationError):
+        FusionSpec.model_validate(
+            {
+                "version": "fusion/v1",
+                "providers": {
+                    "p": {
+                        "type": "openai-compatible",
+                        "base_url": "http://localhost/v1",
+                    }
+                },
+                "models": {"main": {"provider": "p", "model": "m", "context_window": 100}},
+                "pools": {"coding": {"main": "main"}},
+                "completion": completion,
+                "serve": {"pool": "coding"},
+            }
+        )

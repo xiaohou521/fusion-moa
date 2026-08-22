@@ -29,15 +29,18 @@ The v0.1 contract includes:
 - OpenAI Chat, OpenAI Responses, and Anthropic Messages endpoints;
 - portable function/tool-call round trips and `/v1/models` discovery;
 - native final-model SSE for all three public protocols;
+- bounded pre-public-output recovery on the same native stream;
 - Python entry points for third-party providers and policies;
 - an evaluation-gated promotion command for controlled RSI;
 - a version-pinned DeepSeek Harness profile bundle.
 
 Native final-model streaming means expert orchestration completes first, then
-text and tool-call deltas from the one authoritative main-model call are
-forwarded without buffering the full answer. Expert output is never exposed as
-the public stream. Non-function built-in tools, multimodal parity across every
-provider, and online training are not claimed in v0.1.
+public text deltas from the authoritative main model are forwarded without
+buffering the full answer. Expert output is never exposed as the public stream.
+If the first main-model stream produces no usable public output, an explicitly
+enabled policy may replace it with one bounded same-model stream before any
+terminal event reaches the client. Non-function built-in tools, multimodal
+parity across every provider, and online training are not claimed in v0.1.
 
 ## Quick start
 
@@ -59,7 +62,7 @@ Point an OpenAI-compatible client at `http://127.0.0.1:18888/v1` and select
 ```bash
 curl http://127.0.0.1:18888/v1/chat/completions \
   -H 'content-type: application/json' \
-  -d '{"model":"fusion-coding","messages":[{"role":"user","content":"Review this patch"}]}'
+  -d '{"model":"fusion-coding","stream":true,"messages":[{"role":"user","content":"Review this patch"}]}'
 ```
 
 Use [`recipes/review-board.yaml`](recipes/review-board.yaml) to mix providers
@@ -68,13 +71,14 @@ the runtime never inspects GPU type or guesses capability from model names.
 
 ## Configuration model
 
-A recipe has five explicit layers:
+A recipe has six explicit layers:
 
 1. `providers`: transport endpoints and environment-variable credential refs;
 2. `models`: provider model ids plus declared capacity and capabilities;
 3. `pools`: one authoritative main model and role-to-expert assignments;
 4. `policy`: orchestration, expert-call budget, and policy-specific options;
-5. `serve`: one public model name and enabled client protocols.
+5. `completion`: output requirements and a bounded recovery budget;
+6. `serve`: one public model name and enabled client protocols.
 
 Thinking behavior is a declared generation capability, never inferred from a
 model id:
@@ -94,6 +98,39 @@ models:
 plugin support them; bounded requests also carry a positive token budget no
 larger than the effective output limit. This capability is separate from the
 OpenAI-specific `reasoning_effort` passthrough.
+
+Empty-output recovery is explicit and bounded:
+
+```yaml
+completion:
+  require_public_output: true
+  require_tool_or_text: true
+  max_recovery_attempts: 1
+  recovery_max_tokens: 2048
+```
+
+The default `max_recovery_attempts` is `0`, so an existing recipe does not
+change behavior until it opts in. When enabled, only an attempt without usable
+text or a valid tool call is replaced. The runtime calls the same authoritative
+main model once with a bounded recovery instruction; experts are not run again,
+hidden provider reasoning is not replayed, and the client/model output limits
+remain hard caps.
+
+For a streaming request, leading control events, whitespace-only text, terminal
+events, and incomplete tool calls remain behind a small public-output gate. A
+first non-whitespace text delta commits the stream immediately. Tool-call
+deltas are committed only after the call is valid. Once committed, the runtime
+never retries, so clients cannot receive duplicated text or tool execution.
+When an empty attempt is replaced, the recovered deltas continue inside the
+single original Chat, Responses, or Messages SSE lifecycle. The complete answer
+is never buffered.
+
+Known usage from both attempts is summed. If either attempt omits usage,
+completion accounting remains marked incomplete. Responses expose
+`x-fusion-recovery-attempts` and `x-fusion-recovered` when the recovery decision
+is known before headers, plus a secret-safe `x-fusion-recovery-failure` when a
+bounded recovery finishes without public output. Later stream failures remain
+visible through the client protocol's native error event.
 
 Experts are advisory-only. They receive no coding tools, their output is
 bounded and marked untrusted, and only the main model can produce the public
@@ -123,10 +160,10 @@ generic providers intentionally publish only `provider-default`.
 
 A policy implements
 `async prepare(runtime, pool_name, request) -> PreparedCall`: experts finish in
-`prepare`, while the runtime owns the sole final call in complete or streaming
-mode. Protocol translation stays at the gateway boundary and must not own
-routing. A provider without `stream` fails a streaming request visibly instead
-of silently falling back to buffered output.
+`prepare`, while the runtime owns the authoritative final call and any configured
+one-shot same-model recovery. Protocol translation stays at the gateway
+boundary and must not own routing. A provider without `stream` fails a streaming
+request visibly instead of silently falling back to buffered output.
 
 The canonical stream is provider-neutral: emit non-empty `TextDelta` and
 `ToolCallDelta` events, then exactly one `Finish`; an optional `Usage` may

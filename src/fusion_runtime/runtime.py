@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 from .completion import CompletionTracker, classify_response
 from .config import FusionSpec
-from .errors import CapabilityError, ProviderProtocolError
+from .errors import CapabilityError, ProviderError, ProviderProtocolError
 from .plugins import PluginRegistry
 from .policies import DirectPolicy, MainCriticPolicy, ReviewBoardPolicy
 from .providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
+from .recovery import merge_usage, prepare_recovery_request, requires_recovery
 from .types import (
     THINKING_MODES,
     CompletionRecord,
@@ -20,6 +23,11 @@ from .types import (
     FusionStream,
     ModelResponse,
     ModelStreamEvent,
+    RecoveryOutcome,
+    RecoveryRecord,
+    StreamError,
+    TextDelta,
+    Usage,
 )
 
 _trace_id: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
@@ -126,14 +134,80 @@ class FusionRuntime:
         token = _trace_id.set(uuid.uuid4().hex)
         try:
             prepared = await self._policy.prepare(self, pool or self.spec.serve.pool, request)
-            response = await self.call_model(prepared.model_name, prepared.request)
+            initial_response = await self.call_model(prepared.model_name, prepared.request)
+            initial_completion = classify_response(initial_response)
+            completion_spec = self.spec.completion
+            if completion_spec.max_recovery_attempts == 0 or not requires_recovery(
+                initial_completion, completion_spec
+            ):
+                return FusionResult(
+                    response=initial_response,
+                    route=prepared.route,
+                    experts_used=prepared.experts_used,
+                    fallback_reason=prepared.fallback_reason,
+                    trace_id=self.trace_id(),
+                    completion=initial_completion,
+                )
+
+            model = self.spec.models[prepared.model_name]
+            recovery_request = prepare_recovery_request(
+                prepared.request,
+                model,
+                completion_spec,
+                attempt=1,
+            )
+            started = time.perf_counter()
+            try:
+                recovery_response = await self.call_model(prepared.model_name, recovery_request)
+            except ProviderError as exc:
+                duration_ms = (time.perf_counter() - started) * 1000
+                return FusionResult(
+                    response=initial_response,
+                    route=prepared.route,
+                    experts_used=prepared.experts_used,
+                    fallback_reason=prepared.fallback_reason,
+                    trace_id=self.trace_id(),
+                    completion=initial_completion,
+                    recovery=RecoveryOutcome(
+                        attempts=1,
+                        duration_ms=duration_ms,
+                        failure_code=exc.code,
+                        initial_completion=initial_completion,
+                    ),
+                )
+
+            duration_ms = (time.perf_counter() - started) * 1000
+            combined_usage = merge_usage(initial_response.usage, recovery_response.usage)
+            final_response = replace(recovery_response, usage=combined_usage)
+            final_completion = classify_response(final_response)
+            all_usage_reported = bool(initial_response.usage) and bool(recovery_response.usage)
+            final_completion = replace(
+                final_completion,
+                usage_reported=all_usage_reported,
+            )
+            succeeded = not requires_recovery(final_completion, completion_spec)
+            failure_code = None
+            if not succeeded:
+                failure_code = (
+                    final_completion.failure_tags[0]
+                    if final_completion.failure_tags
+                    else "recovery_output_missing"
+                )
             return FusionResult(
-                response=response,
+                response=final_response,
                 route=prepared.route,
                 experts_used=prepared.experts_used,
                 fallback_reason=prepared.fallback_reason,
                 trace_id=self.trace_id(),
-                completion=classify_response(response),
+                completion=final_completion,
+                recovery=RecoveryOutcome(
+                    attempts=1,
+                    succeeded=succeeded,
+                    duration_ms=duration_ms,
+                    failure_code=failure_code,
+                    usage=dict(recovery_response.usage),
+                    initial_completion=initial_completion,
+                ),
             )
         finally:
             _trace_id.reset(token)
@@ -148,7 +222,12 @@ class FusionRuntime:
                 raise CapabilityError(
                     "selected provider does not implement native final-model streaming"
                 )
-            events = self.stream_model(prepared.model_name, prepared.request)
+            recovery = RecoveryRecord()
+            events = self._stream_with_recovery(
+                prepared.model_name,
+                prepared.request,
+                recovery,
+            )
             try:
                 first = await anext(events)
             except StopAsyncIteration as exc:
@@ -168,9 +247,137 @@ class FusionRuntime:
                 fallback_reason=prepared.fallback_reason,
                 trace_id=self.trace_id(),
                 completion=completion,
+                recovery=recovery,
             )
         finally:
             _trace_id.reset(token)
+
+    async def _stream_with_recovery(
+        self,
+        model_name: str,
+        request: FusionRequest,
+        recovery: RecoveryRecord,
+    ) -> AsyncIterator[ModelStreamEvent]:
+        """Keep the final answer native-streamed while hiding one empty attempt."""
+
+        initial = _BufferedAttempt()
+        initial_error: ProviderProtocolError | None = None
+        initial_events = self.stream_model(model_name, request)
+        try:
+            try:
+                async for event in initial_events:
+                    for ready in initial.observe(event):
+                        yield ready
+            except ProviderProtocolError as exc:
+                initial_error = exc
+        finally:
+            await initial_events.aclose()
+        initial.finish()
+
+        if initial.committed:
+            if initial_error is not None:
+                yield StreamError(str(initial_error), code=initial_error.code)
+                return
+            if initial.usage_seen:
+                yield Usage(
+                    initial.usage,
+                    reported_for_all_attempts=initial.all_usage_reported,
+                )
+            return
+
+        completion_spec = self.spec.completion
+        if completion_spec.max_recovery_attempts == 0 or not requires_recovery(
+            initial.outcome, completion_spec
+        ):
+            if initial_error is not None:
+                raise initial_error
+            for event in initial.release_pending():
+                yield event
+            if initial.usage_seen:
+                yield Usage(
+                    initial.usage,
+                    reported_for_all_attempts=initial.all_usage_reported,
+                )
+            return
+
+        model = self.spec.models[model_name]
+        recovery_request = prepare_recovery_request(
+            request,
+            model,
+            completion_spec,
+            attempt=1,
+        )
+        started = time.perf_counter()
+        recovery.outcome = RecoveryOutcome(
+            attempts=1,
+            initial_completion=initial.outcome,
+        )
+        retried = _BufferedAttempt()
+        recovery_error: ProviderError | None = None
+        recovery_events = self.stream_model(model_name, recovery_request)
+        try:
+            try:
+                async for event in recovery_events:
+                    ready_events = retried.observe(event)
+                    if ready_events and retried.committed:
+                        recovery.outcome = RecoveryOutcome(
+                            attempts=1,
+                            succeeded=True,
+                            duration_ms=(time.perf_counter() - started) * 1000,
+                            usage=dict(retried.usage),
+                            initial_completion=initial.outcome,
+                        )
+                    for ready in ready_events:
+                        yield ready
+            except ProviderError as exc:
+                recovery_error = exc
+        finally:
+            await recovery_events.aclose()
+        retried.finish()
+
+        if recovery_error is not None:
+            recovery.outcome = RecoveryOutcome(
+                attempts=1,
+                succeeded=retried.committed,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                failure_code=None if retried.committed else recovery_error.code,
+                usage=dict(retried.usage),
+                initial_completion=initial.outcome,
+            )
+            if retried.committed:
+                yield StreamError(
+                    str(recovery_error),
+                    code=recovery_error.code,
+                    retryable=recovery_error.retryable,
+                )
+                return
+            raise recovery_error
+
+        if not retried.committed:
+            for event in retried.release_pending():
+                yield event
+
+        succeeded = retried.committed and not requires_recovery(retried.outcome, completion_spec)
+        failure_code = None if succeeded else retried.failure_code
+        recovery.outcome = RecoveryOutcome(
+            attempts=1,
+            succeeded=succeeded,
+            duration_ms=(time.perf_counter() - started) * 1000,
+            failure_code=failure_code,
+            usage=dict(retried.usage),
+            initial_completion=initial.outcome,
+        )
+        combined_usage = merge_usage(initial.usage, retried.usage)
+        if combined_usage:
+            yield Usage(
+                combined_usage,
+                reported_for_all_attempts=(
+                    initial.usage_seen
+                    and initial.all_usage_reported
+                    and retried.usage_seen
+                    and retried.all_usage_reported
+                ),
+            )
 
     async def aclose(self) -> None:
         seen: set[int] = set()
@@ -243,3 +450,59 @@ class _ObservedStream:
         self._closed = True
         self._tracker.cancel()
         await self._events.aclose()
+
+
+class _BufferedAttempt:
+    """Buffer only the events that cannot yet be exposed exactly once."""
+
+    def __init__(self) -> None:
+        self._record = CompletionRecord()
+        self._tracker = CompletionTracker(self._record)
+        self._pending: list[ModelStreamEvent] = []
+        self.usage: dict[str, object] = {}
+        self.usage_seen = False
+        self.all_usage_reported = True
+        self.committed = False
+        self._stream_error_code: str | None = None
+
+    @property
+    def outcome(self):
+        return self._record.outcome
+
+    @property
+    def failure_code(self) -> str:
+        if self._stream_error_code:
+            return self._stream_error_code
+        if self.outcome.failure_tags:
+            return self.outcome.failure_tags[0]
+        return "recovery_output_missing"
+
+    def observe(self, event: ModelStreamEvent) -> list[ModelStreamEvent]:
+        self._tracker.observe(event)
+        if isinstance(event, Usage):
+            self.usage_seen = True
+            self.all_usage_reported = self.all_usage_reported and event.reported_for_all_attempts
+            self.usage.update(event.usage)
+            return []
+        if isinstance(event, StreamError):
+            self._stream_error_code = event.code
+        if self.committed:
+            return [event]
+        self._pending.append(event)
+        if isinstance(event, TextDelta) and self.outcome.has_text_output:
+            return self._commit()
+        if self._tracker.terminal_seen and self.outcome.has_valid_tool_call:
+            return self._commit()
+        return []
+
+    def finish(self) -> None:
+        self._tracker.end()
+
+    def release_pending(self) -> list[ModelStreamEvent]:
+        pending = self._pending
+        self._pending = []
+        return pending
+
+    def _commit(self) -> list[ModelStreamEvent]:
+        self.committed = True
+        return self.release_pending()

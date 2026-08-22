@@ -54,7 +54,7 @@ class ModelResponse:
     content: str
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     finish_reason: str = "stop"
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -74,11 +74,30 @@ class CompletionOutcome:
     failure_tags: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class RecoveryOutcome:
+    """Bounded recovery evidence for one public completion request."""
+
+    attempts: int = 0
+    succeeded: bool = False
+    duration_ms: float = 0.0
+    failure_code: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
+    initial_completion: CompletionOutcome | None = field(default=None, repr=False)
+
+
 @dataclass
 class CompletionRecord:
     """Mutable holder whose value is replaced with immutable stream snapshots."""
 
     outcome: CompletionOutcome = field(default_factory=CompletionOutcome)
+
+
+@dataclass
+class RecoveryRecord:
+    """Mutable holder for recovery evidence produced while a stream is consumed."""
+
+    outcome: RecoveryOutcome = field(default_factory=RecoveryOutcome)
 
 
 @dataclass(frozen=True)
@@ -89,6 +108,7 @@ class FusionResult:
     fallback_reason: str | None = None
     trace_id: str = ""
     completion: CompletionOutcome = field(default_factory=CompletionOutcome, repr=False)
+    recovery: RecoveryOutcome = field(default_factory=RecoveryOutcome, repr=False)
 
 
 @dataclass(frozen=True)
@@ -111,7 +131,8 @@ class Finish:
 
 @dataclass(frozen=True)
 class Usage:
-    usage: dict[str, int]
+    usage: dict[str, Any]
+    reported_for_all_attempts: bool = True
 
 
 @dataclass(frozen=True)
@@ -141,3 +162,4 @@ class FusionStream:
     fallback_reason: str | None = None
     trace_id: str = ""
     completion: CompletionRecord = field(default_factory=CompletionRecord, repr=False)
+    recovery: RecoveryRecord = field(default_factory=RecoveryRecord, repr=False)
