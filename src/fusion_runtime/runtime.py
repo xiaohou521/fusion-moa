@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
 
+from .accounting import assess_usage
 from .completion import CompletionTracker, classify_response
 from .config import FusionSpec
 from .errors import CapabilityError, ProviderError, ProviderProtocolError
@@ -161,13 +162,23 @@ class FusionRuntime:
                 recovery_response = await self.call_model(prepared.model_name, recovery_request)
             except ProviderError as exc:
                 duration_ms = (time.perf_counter() - started) * 1000
+                usage_reported, accounting_issues = assess_usage(
+                    initial_response.usage,
+                    report_seen=bool(initial_response.usage),
+                    reported_for_all_attempts=False,
+                )
                 return FusionResult(
                     response=initial_response,
                     route=prepared.route,
                     experts_used=prepared.experts_used,
                     fallback_reason=prepared.fallback_reason,
                     trace_id=self.trace_id(),
-                    completion=initial_completion,
+                    completion=replace(
+                        initial_completion,
+                        usage_reported=usage_reported,
+                        accounting_complete=not accounting_issues,
+                        accounting_issues=accounting_issues,
+                    ),
                     recovery=RecoveryOutcome(
                         attempts=1,
                         duration_ms=duration_ms,
@@ -181,9 +192,16 @@ class FusionRuntime:
             final_response = replace(recovery_response, usage=combined_usage)
             final_completion = classify_response(final_response)
             all_usage_reported = bool(initial_response.usage) and bool(recovery_response.usage)
+            usage_reported, accounting_issues = assess_usage(
+                combined_usage,
+                report_seen=bool(combined_usage),
+                reported_for_all_attempts=all_usage_reported,
+            )
             final_completion = replace(
                 final_completion,
-                usage_reported=all_usage_reported,
+                usage_reported=usage_reported,
+                accounting_complete=not accounting_issues,
+                accounting_issues=accounting_issues,
             )
             succeeded = not requires_recovery(final_completion, completion_spec)
             failure_code = None

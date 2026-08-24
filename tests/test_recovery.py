@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
+from fusion_runtime.accounting import ATTEMPT_USAGE_MISSING
 from fusion_runtime.completion import FINAL_ANSWER_MISSING, OUTPUT_TRUNCATED
 from fusion_runtime.config import CompletionSpec, FusionSpec, ModelSpec
 from fusion_runtime.errors import ProviderHTTPError, ProviderProtocolError
@@ -194,6 +195,8 @@ async def test_successful_empty_output_recovery_is_same_model_bounded_and_accoun
     }
     assert result.completion.status == "completed"
     assert result.completion.usage_reported is True
+    assert result.completion.accounting_complete is True
+    assert result.completion.accounting_issues == ()
     assert result.recovery.attempts == 1
     assert result.recovery.succeeded is True
     assert result.recovery.failure_code is None
@@ -249,6 +252,8 @@ async def test_provider_failure_during_recovery_preserves_initial_outcome_visibl
     assert len(provider.calls) == 2
     assert result.response.usage == {"total_tokens": 2}
     assert result.completion.failure_tags == (FINAL_ANSWER_MISSING, OUTPUT_TRUNCATED)
+    assert result.completion.accounting_complete is False
+    assert result.completion.accounting_issues == (ATTEMPT_USAGE_MISSING,)
     assert result.recovery.succeeded is False
     assert result.recovery.failure_code == "upstream_unavailable"
 
@@ -266,6 +271,8 @@ async def test_missing_usage_on_any_attempt_is_not_reported_as_complete_accounti
     assert result.response.usage == {"total_tokens": 3}
     assert result.completion.status == "completed"
     assert result.completion.usage_reported is False
+    assert result.completion.accounting_complete is False
+    assert result.completion.accounting_issues == (ATTEMPT_USAGE_MISSING,)
 
 
 async def test_recovery_reuses_expert_advice_without_rerunning_expert():
@@ -315,6 +322,8 @@ async def test_stream_recovery_hides_empty_attempt_and_keeps_recovered_text_nati
     assert recovery_request.metadata["fusion_recovery_attempt"] == 1
     assert stream.completion.outcome.status == "completed"
     assert stream.completion.outcome.usage_reported is True
+    assert stream.completion.outcome.accounting_complete is True
+    assert stream.completion.outcome.accounting_issues == ()
     assert stream.recovery.outcome.attempts == 1
     assert stream.recovery.outcome.succeeded is True
     assert stream.recovery.outcome.initial_completion is not None
@@ -466,6 +475,8 @@ async def test_stream_recovery_marks_usage_incomplete_when_an_attempt_omits_it()
     assert events[-1] == Usage({"total_tokens": 3}, reported_for_all_attempts=False)
     assert stream.completion.outcome.status == "completed"
     assert stream.completion.outcome.usage_reported is False
+    assert stream.completion.outcome.accounting_complete is False
+    assert stream.completion.outcome.accounting_issues == (ATTEMPT_USAGE_MISSING,)
 
 
 async def test_cancellation_before_public_output_closes_stream_without_recovery():

@@ -132,6 +132,16 @@ is known before headers, plus a secret-safe `x-fusion-recovery-failure` when a
 bounded recovery finishes without public output. Later stream failures remain
 visible through the client protocol's native error event.
 
+Output quality and accounting evidence are classified independently. After a
+non-streaming call, inspect `result.completion`; after a streaming call, consume
+`stream.events` to its terminal event and then inspect `stream.completion.outcome`.
+`accounting_complete` is true only when every attempt reports recognizable,
+non-negative token counters without a contradictory total. Stable
+`accounting_issues` include `usage_missing`, `attempt_usage_missing`,
+`usage_tokens_missing`, `usage_value_invalid`, and `usage_total_mismatch`.
+Missing usage is never interpreted as zero cost. Protocol-required placeholder
+zeros in a compatibility response are not accounting evidence.
+
 Experts are advisory-only. They receive no coding tools, their output is
 bounded and marked untrusted, and only the main model can produce the public
 answer or tool call. A failed expert is surfaced through `x-fusion-fallback`;

@@ -70,6 +70,8 @@ class CompletionOutcome:
     has_valid_tool_call: bool = False
     tool_call_count: int = 0
     usage_reported: bool = False
+    accounting_complete: bool = False
+    accounting_issues: tuple[str, ...] = ()
     infrastructure_failure: bool = False
     failure_tags: tuple[str, ...] = ()
 

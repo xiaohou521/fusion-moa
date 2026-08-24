@@ -1,5 +1,6 @@
 import pytest
 
+from fusion_runtime.accounting import USAGE_MISSING, USAGE_TOTAL_MISMATCH
 from fusion_runtime.completion import (
     FINAL_ANSWER_MISSING,
     INVALID_TOOL_CALL,
@@ -104,7 +105,24 @@ def test_empty_truncated_response_has_stable_failure_tag_order():
     assert outcome.finish_reason == "length"
     assert outcome.has_public_output is False
     assert outcome.usage_reported is False
+    assert outcome.accounting_complete is False
+    assert outcome.accounting_issues == (USAGE_MISSING,)
     assert outcome.failure_tags == (FINAL_ANSWER_MISSING, OUTPUT_TRUNCATED)
+
+
+def test_accounting_issue_does_not_turn_valid_output_into_a_model_failure():
+    outcome = classify_response(
+        ModelResponse(
+            content="done",
+            usage={"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 9},
+        )
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.failure_tags == ()
+    assert outcome.usage_reported is True
+    assert outcome.accounting_complete is False
+    assert outcome.accounting_issues == (USAGE_TOTAL_MISMATCH,)
 
 
 def test_invalid_tool_call_is_not_treated_as_a_valid_public_answer():
@@ -139,6 +157,8 @@ def test_stream_tracker_exposes_pending_then_final_immutable_snapshots():
     assert finished.usage_reported is False
     assert record.outcome.status == "completed"
     assert record.outcome.usage_reported is True
+    assert record.outcome.accounting_complete is True
+    assert record.outcome.accounting_issues == ()
 
 
 def test_stream_ending_without_terminal_is_an_infrastructure_failure():

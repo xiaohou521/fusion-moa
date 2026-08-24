@@ -119,6 +119,14 @@ completion:
 `x-fusion-recovered`；有界恢复仍无公共输出时还会提供不含敏感信息的
 `x-fusion-recovery-failure`。响应开始后的故障继续使用各客户端协议原生错误事件表达。
 
+输出质量和 accounting 证据会分别分类。非流式调用结束后读取
+`result.completion`；流式调用需要先消费到 `stream.events` 的终止事件，再读取
+`stream.completion.outcome`。只有每次尝试都报告可识别、非负且总数不矛盾的 token
+计数时，`accounting_complete` 才为 true。稳定的 `accounting_issues` 包括
+`usage_missing`、`attempt_usage_missing`、`usage_tokens_missing`、
+`usage_value_invalid` 和 `usage_total_mismatch`。缺失 usage 绝不会被解释为零成本；
+兼容协议为满足 schema 输出的占位零值也不构成 accounting 证据。
+
 ## 安全边界
 
 专家只提供建议：不拿 coding tools，输出会被限长并标记为不可信；主模型是唯一

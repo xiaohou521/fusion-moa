@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .accounting import assess_usage
 from .types import (
     CompletionOutcome,
     CompletionRecord,
@@ -66,7 +67,8 @@ def classify_response(response: ModelResponse) -> CompletionOutcome:
         tool_call_count=tool_call_count,
         valid_tool_calls=valid_tool_calls,
         invalid_tool_call=invalid_tool_call,
-        usage_reported=bool(response.usage),
+        usage=response.usage,
+        usage_report_seen=bool(response.usage),
     )
 
 
@@ -110,6 +112,7 @@ class CompletionTracker:
         self._finish_reason: str | None = None
         self._usage_event_seen = False
         self._all_usage_reported = True
+        self._usage: dict[str, Any] = {}
         self._stream_error: StreamError | None = None
         self._terminal_seen = False
         self._ended_without_terminal = False
@@ -131,6 +134,7 @@ class CompletionTracker:
         elif isinstance(event, Usage):
             self._usage_event_seen = True
             self._all_usage_reported = self._all_usage_reported and event.reported_for_all_attempts
+            self._usage.update(event.usage)
         elif isinstance(event, StreamError):
             self._stream_error = event
             self._terminal_seen = True
@@ -165,7 +169,9 @@ class CompletionTracker:
             tool_call_count=tool_call_count,
             valid_tool_calls=valid_tool_calls,
             invalid_tool_call=invalid_tool_call,
-            usage_reported=self._usage_event_seen and self._all_usage_reported,
+            usage=self._usage,
+            usage_report_seen=self._usage_event_seen,
+            reported_for_all_attempts=self._all_usage_reported,
             stream_error_code=error_code,
             ended_without_terminal=self._ended_without_terminal,
             cancelled=self._cancelled,
@@ -180,7 +186,9 @@ def _build_outcome(
     tool_call_count: int,
     valid_tool_calls: int,
     invalid_tool_call: bool,
-    usage_reported: bool,
+    usage: dict[str, Any],
+    usage_report_seen: bool,
+    reported_for_all_attempts: bool = True,
     stream_error_code: str | None = None,
     ended_without_terminal: bool = False,
     cancelled: bool = False,
@@ -212,6 +220,17 @@ def _build_outcome(
     else:
         status = "completed"
 
+    accounting_final = (terminal or ended_without_terminal) and not cancelled
+    if accounting_final:
+        usage_reported, accounting_issues = assess_usage(
+            usage,
+            report_seen=usage_report_seen,
+            reported_for_all_attempts=reported_for_all_attempts,
+        )
+    else:
+        usage_reported = usage_report_seen and bool(usage) and reported_for_all_attempts
+        accounting_issues = ()
+
     return CompletionOutcome(
         status=status,
         finish_reason=finish_reason,
@@ -221,6 +240,8 @@ def _build_outcome(
         has_valid_tool_call=has_valid_tool_call,
         tool_call_count=tool_call_count,
         usage_reported=usage_reported,
+        accounting_complete=accounting_final and not accounting_issues,
+        accounting_issues=accounting_issues,
         infrastructure_failure=infrastructure_failure,
         failure_tags=tuple(tag for tag in _FAILURE_TAG_ORDER if tag in tags),
     )
