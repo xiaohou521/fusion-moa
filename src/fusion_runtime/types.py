@@ -111,6 +111,9 @@ class FusionResult:
     trace_id: str = ""
     completion: CompletionOutcome = field(default_factory=CompletionOutcome, repr=False)
     recovery: RecoveryOutcome = field(default_factory=RecoveryOutcome, repr=False)
+    preparation_attempts: int = 0
+    preparation_duration_ms: float = 0.0
+    preparation_usage: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
@@ -154,6 +157,10 @@ class PreparedCall:
     route: str
     experts_used: tuple[str, ...] = ()
     fallback_reason: str | None = None
+    preparation_attempts: int = 0
+    preparation_duration_ms: float = 0.0
+    preparation_usage: dict[str, Any] = field(default_factory=dict, repr=False)
+    preparation_usage_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -165,3 +172,6 @@ class FusionStream:
     trace_id: str = ""
     completion: CompletionRecord = field(default_factory=CompletionRecord, repr=False)
     recovery: RecoveryRecord = field(default_factory=RecoveryRecord, repr=False)
+    preparation_attempts: int = 0
+    preparation_duration_ms: float = 0.0
+    preparation_usage: dict[str, Any] = field(default_factory=dict, repr=False)

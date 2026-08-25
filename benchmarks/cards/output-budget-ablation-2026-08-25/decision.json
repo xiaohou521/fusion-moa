@@ -1,0 +1,32 @@
+{
+  "selected_recipe": "reasoning-reserve-4096",
+  "selected_index": 0,
+  "selected_higher_budget": false,
+  "stopped_early": true,
+  "reasons": [
+    "p95 latency ratio 2.583978 exceeds 1.500000"
+  ],
+  "evaluated_steps": [
+    {
+      "baseline_recipe": "reasoning-reserve-4096",
+      "candidate_recipe": "reasoning-reserve-8192",
+      "advance_to_higher_budget": false,
+      "reasons": [
+        "p95 latency ratio 2.583978 exceeds 1.500000"
+      ],
+      "aggregate_pass_delta": 4,
+      "non_regressing_seeds": 3,
+      "pass_deltas_by_seed": {
+        "101": 2,
+        "202": 1,
+        "303": 1
+      },
+      "unextractable_answer_delta": -8,
+      "unextractable_answer_reduction": 0.7272727272727272,
+      "meaningful_gain": true,
+      "p95_latency_ratio": 2.5839776661056306,
+      "mean_total_token_ratio": 1.1642870360042579,
+      "infrastructure_failure_rate_delta": 0.0
+    }
+  ]
+}

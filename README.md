@@ -99,6 +99,36 @@ plugin support them; bounded requests also carry a positive token budget no
 larger than the effective output limit. This capability is separate from the
 OpenAI-specific `reasoning_effort` passthrough.
 
+When a provider cannot enforce a hidden-reasoning budget, the built-in
+`reasoning-reserve` policy can make the budget split explicit:
+
+```yaml
+policy:
+  type: reasoning-reserve
+  options:
+    plan_max_tokens: 256
+    final_answer_min_tokens: 3072
+    max_plan_chars: 4000
+    plan_thinking_mode: disabled
+    final_thinking_mode: disabled
+```
+
+The authoritative main model first produces one bounded private outline with
+tools removed. The remaining output budget is then reserved for a second call
+to the same main model, whose final answer or tool call is the only call exposed
+as the native public stream. The outline is bounded, escaped, marked as
+non-authoritative context, and never persisted by the policy. If planning fails
+or returns no outline, the reserved final call still runs and the fallback is
+visible. `plan_max_tokens + final_answer_min_tokens` must fit the request/model
+output limit; the policy never silently shrinks the declared final reserve.
+
+Both calls' usage is merged into the public total and missing usage from either
+call leaves accounting incomplete. The output-token split does not make the
+two-call total compute free: the final call repeats the input context, so frozen
+evaluation must still gate aggregate input tokens and latency. A provider plugin
+must explicitly map the configured thinking modes; the built-in generic
+OpenAI-compatible provider does not guess a model-specific disable switch.
+
 Empty-output recovery is explicit and bounded:
 
 ```yaml
@@ -247,6 +277,26 @@ The first [frozen LiveCodeBench pilot](benchmarks/cards/lcb-pilot-2026-08-19/CAR
 did exactly that: the default review board was rejected and the direct route was
 kept. The card contains aggregate evidence and limitations, never private
 deployment configuration or raw model answers.
+
+The follow-up [completion screen](benchmarks/cards/completion-screen-2026-08-24/CARD.md)
+compares provider-default direct inference with disabled thinking and bounded
+empty-output recovery across 15 tasks and three seeds. It passed its frozen
+screening gate, which means only that the candidate may advance to a larger
+held-out evaluation; the card explicitly does not claim production promotion.
+
+The next [final-code reserve screen](benchmarks/cards/reasoning-reserve-screen-2026-08-25/CARD.md)
+compares thinking-disabled direct inference with a 256-token private outline and
+a hard-reserved native-streamed final call. The development screen improved
+execution pass@1 and answer completeness, while reporting the repeated-prompt
+overhead and disclosing that two diagnostic tasks were used to choose the plan
+budget. Its result still requires genuinely held-out and coding-agent validation.
+
+The follow-on [output-budget ablation](benchmarks/cards/output-budget-ablation-2026-08-25/CARD.md)
+holds that policy fixed and compares 4K, 8K, and 16K aggregate output ceilings.
+Higher ceilings recover more complete and correct code, but the frozen sequential
+gate retains 4K because the 4K-to-8K p95-latency ratio exceeds its limit. The card
+reports the full quality/latency tradeoff and does not treat 4096 as a runtime
+requirement or a universal optimum.
 
 ## License
 

@@ -53,11 +53,16 @@ def assess_usage(
     return usage_reported, tuple(issue for issue in _ISSUE_ORDER if issue in issues)
 
 
-def _token_counters(values: dict[str, Any]):
+def _token_counters(values: dict[str, Any], *, nested: bool = False):
     for key, value in values.items():
         normalized = str(key).strip().lower()
         if isinstance(value, dict):
-            yield from _token_counters(value)
+            yield from _token_counters(value, nested=True)
+        elif nested and value is None:
+            # OpenAI-compatible providers may retain unavailable optional detail
+            # counters as null. They are not reported counters and do not make the
+            # valid top-level accounting totals contradictory.
+            continue
         elif normalized in {"token", "tokens"} or normalized.endswith(("_token", "_tokens")):
             yield normalized, value
 

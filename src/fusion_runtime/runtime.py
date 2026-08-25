@@ -13,11 +13,17 @@ from .completion import CompletionTracker, classify_response
 from .config import FusionSpec
 from .errors import CapabilityError, ProviderError, ProviderProtocolError
 from .plugins import PluginRegistry
-from .policies import DirectPolicy, MainCriticPolicy, ReviewBoardPolicy
+from .policies import (
+    DirectPolicy,
+    MainCriticPolicy,
+    ReasoningReservePolicy,
+    ReviewBoardPolicy,
+)
 from .providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
 from .recovery import merge_usage, prepare_recovery_request, requires_recovery
 from .types import (
     THINKING_MODES,
+    CompletionOutcome,
     CompletionRecord,
     FusionRequest,
     FusionResult,
@@ -42,6 +48,7 @@ class FusionRuntime:
         self.registry.register("providers", "llama.cpp", OpenAICompatibleProvider)
         self.registry.register("providers", "anthropic-compatible", AnthropicCompatibleProvider)
         self.registry.register("policies", "direct", lambda _spec: DirectPolicy())
+        self.registry.register("policies", "reasoning-reserve", ReasoningReservePolicy)
         self.registry.register("policies", "main-critic", MainCriticPolicy)
         self.registry.register("policies", "review-board", ReviewBoardPolicy)
         self.registry.discover()
@@ -135,8 +142,18 @@ class FusionRuntime:
         token = _trace_id.set(uuid.uuid4().hex)
         try:
             prepared = await self._policy.prepare(self, pool or self.spec.serve.pool, request)
-            initial_response = await self.call_model(prepared.model_name, prepared.request)
-            initial_completion = classify_response(initial_response)
+            initial_attempt = await self.call_model(prepared.model_name, prepared.request)
+            initial_attempt_usage_reported = bool(initial_attempt.usage)
+            initial_response = replace(
+                initial_attempt,
+                usage=merge_usage(prepared.preparation_usage, initial_attempt.usage),
+            )
+            initial_completion = _classify_attempts(
+                initial_response,
+                all_usage_reported=(
+                    prepared.preparation_usage_complete and initial_attempt_usage_reported
+                ),
+            )
             completion_spec = self.spec.completion
             if completion_spec.max_recovery_attempts == 0 or not requires_recovery(
                 initial_completion, completion_spec
@@ -148,6 +165,9 @@ class FusionRuntime:
                     fallback_reason=prepared.fallback_reason,
                     trace_id=self.trace_id(),
                     completion=initial_completion,
+                    preparation_attempts=prepared.preparation_attempts,
+                    preparation_duration_ms=prepared.preparation_duration_ms,
+                    preparation_usage=dict(prepared.preparation_usage),
                 )
 
             model = self.spec.models[prepared.model_name]
@@ -185,13 +205,20 @@ class FusionRuntime:
                         failure_code=exc.code,
                         initial_completion=initial_completion,
                     ),
+                    preparation_attempts=prepared.preparation_attempts,
+                    preparation_duration_ms=prepared.preparation_duration_ms,
+                    preparation_usage=dict(prepared.preparation_usage),
                 )
 
             duration_ms = (time.perf_counter() - started) * 1000
             combined_usage = merge_usage(initial_response.usage, recovery_response.usage)
             final_response = replace(recovery_response, usage=combined_usage)
             final_completion = classify_response(final_response)
-            all_usage_reported = bool(initial_response.usage) and bool(recovery_response.usage)
+            all_usage_reported = (
+                prepared.preparation_usage_complete
+                and initial_attempt_usage_reported
+                and bool(recovery_response.usage)
+            )
             usage_reported, accounting_issues = assess_usage(
                 combined_usage,
                 report_seen=bool(combined_usage),
@@ -226,6 +253,9 @@ class FusionRuntime:
                     usage=dict(recovery_response.usage),
                     initial_completion=initial_completion,
                 ),
+                preparation_attempts=prepared.preparation_attempts,
+                preparation_duration_ms=prepared.preparation_duration_ms,
+                preparation_usage=dict(prepared.preparation_usage),
             )
         finally:
             _trace_id.reset(token)
@@ -245,6 +275,8 @@ class FusionRuntime:
                 prepared.model_name,
                 prepared.request,
                 recovery,
+                preparation_usage=prepared.preparation_usage,
+                preparation_usage_complete=prepared.preparation_usage_complete,
             )
             try:
                 first = await anext(events)
@@ -266,6 +298,9 @@ class FusionRuntime:
                 trace_id=self.trace_id(),
                 completion=completion,
                 recovery=recovery,
+                preparation_attempts=prepared.preparation_attempts,
+                preparation_duration_ms=prepared.preparation_duration_ms,
+                preparation_usage=dict(prepared.preparation_usage),
             )
         finally:
             _trace_id.reset(token)
@@ -275,6 +310,9 @@ class FusionRuntime:
         model_name: str,
         request: FusionRequest,
         recovery: RecoveryRecord,
+        *,
+        preparation_usage: dict[str, object],
+        preparation_usage_complete: bool,
     ) -> AsyncIterator[ModelStreamEvent]:
         """Keep the final answer native-streamed while hiding one empty attempt."""
 
@@ -296,10 +334,15 @@ class FusionRuntime:
             if initial_error is not None:
                 yield StreamError(str(initial_error), code=initial_error.code)
                 return
-            if initial.usage_seen:
+            combined_usage = merge_usage(preparation_usage, initial.usage)
+            if combined_usage:
                 yield Usage(
-                    initial.usage,
-                    reported_for_all_attempts=initial.all_usage_reported,
+                    combined_usage,
+                    reported_for_all_attempts=(
+                        preparation_usage_complete
+                        and initial.usage_seen
+                        and initial.all_usage_reported
+                    ),
                 )
             return
 
@@ -311,10 +354,15 @@ class FusionRuntime:
                 raise initial_error
             for event in initial.release_pending():
                 yield event
-            if initial.usage_seen:
+            combined_usage = merge_usage(preparation_usage, initial.usage)
+            if combined_usage:
                 yield Usage(
-                    initial.usage,
-                    reported_for_all_attempts=initial.all_usage_reported,
+                    combined_usage,
+                    reported_for_all_attempts=(
+                        preparation_usage_complete
+                        and initial.usage_seen
+                        and initial.all_usage_reported
+                    ),
                 )
             return
 
@@ -385,12 +433,13 @@ class FusionRuntime:
             usage=dict(retried.usage),
             initial_completion=initial.outcome,
         )
-        combined_usage = merge_usage(initial.usage, retried.usage)
+        combined_usage = merge_usage(preparation_usage, initial.usage, retried.usage)
         if combined_usage:
             yield Usage(
                 combined_usage,
                 reported_for_all_attempts=(
-                    initial.usage_seen
+                    preparation_usage_complete
+                    and initial.usage_seen
                     and initial.all_usage_reported
                     and retried.usage_seen
                     and retried.all_usage_reported
@@ -409,6 +458,25 @@ class FusionRuntime:
             result = close()
             if inspect.isawaitable(result):
                 await result
+
+
+def _classify_attempts(
+    response: ModelResponse,
+    *,
+    all_usage_reported: bool,
+) -> CompletionOutcome:
+    outcome = classify_response(response)
+    usage_reported, accounting_issues = assess_usage(
+        response.usage,
+        report_seen=bool(response.usage),
+        reported_for_all_attempts=all_usage_reported,
+    )
+    return replace(
+        outcome,
+        usage_reported=usage_reported,
+        accounting_complete=not accounting_issues,
+        accounting_issues=accounting_issues,
+    )
 
 
 class _PrefetchedStream:

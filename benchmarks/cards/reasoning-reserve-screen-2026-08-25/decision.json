@@ -1,0 +1,15 @@
+{
+  "advance_to_larger_evaluation": true,
+  "reasons": [],
+  "aggregate_pass_delta": 10,
+  "non_regressing_seeds": 3,
+  "pass_deltas_by_seed": {
+    "101": 3,
+    "202": 3,
+    "303": 4
+  },
+  "unextractable_answer_reduction": 0.5217391304347825,
+  "p95_latency_ratio": 0.9714307766407394,
+  "mean_total_token_ratio": 1.0831418993118151,
+  "infrastructure_failure_rate_delta": 0.0
+}

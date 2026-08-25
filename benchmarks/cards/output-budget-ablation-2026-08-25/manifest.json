@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "benchmark": "livecodebench/code_generation_lite",
+  "screen_only": true,
+  "task_set_digest": "2c0d398b9efbfb7c4fa60ac149b07d8061bbed2a32497c62459d327c0ea44816",
+  "seeds": [101, 202, 303],
+  "pair_order": "4K reused from the parent screen; 8K/16K used a seeded two-way balanced crossover",
+  "latency_comparability": "4K and the higher budgets were collected in different runs",
+  "variants": {
+    "reasoning-reserve-4096": {
+      "policy": "reasoning-reserve",
+      "thinking_mode": "disabled",
+      "aggregate_output_token_limit": 4096,
+      "plan_max_tokens": 256,
+      "final_max_tokens": 3840,
+      "max_recovery_attempts": 0
+    },
+    "reasoning-reserve-8192": {
+      "policy": "reasoning-reserve",
+      "thinking_mode": "disabled",
+      "aggregate_output_token_limit": 8192,
+      "plan_max_tokens": 256,
+      "final_max_tokens": 7936,
+      "max_recovery_attempts": 0
+    },
+    "reasoning-reserve-16384": {
+      "policy": "reasoning-reserve",
+      "thinking_mode": "disabled",
+      "aggregate_output_token_limit": 16384,
+      "plan_max_tokens": 256,
+      "final_max_tokens": 16128,
+      "max_recovery_attempts": 0
+    }
+  },
+  "grader": {
+    "name": "livecodebench-official-execution-grader",
+    "commit": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+    "timeout_seconds": 10
+  },
+  "grader_digest": "8dd00de1a82abb877b53f67f08be751b52c5c2a480824b43c3f682e58d2302a7",
+  "published_environment": {
+    "runtime_source_digest": "5ffb2f1a8fddc1a12c06ac652c2945ef24e1e3c039dfd1b2755d41681500731b",
+    "decode": {
+      "temperature": 0.2,
+      "aggregate_output_token_limits": [4096, 8192, 16384],
+      "plan_max_tokens": 256,
+      "seeds": [101, 202, 303]
+    },
+    "concurrency": 1,
+    "cache_policy": "declared-warm",
+    "retry_policy": "none"
+  },
+  "environment_digest": "87f1cd70573c32961ff880c4f574648a87a1a3c32433e1faf7288e68087dd348",
+  "environment_digest_includes_withheld_deployment_fields": true,
+  "evidence_digests": {
+    "reused_4k_raw_results_sha256": "fd00284d1da262847ca1af33e222fd012169bad7ebcd8dab244f5447f32a7388",
+    "new_8k_16k_raw_results_sha256": "41d5e511ede5d3fa30a1a1977e4602ce437cf5c9c5606e4173ebeb5136b0f4fa"
+  },
+  "actual_cost_usd_available": false
+}

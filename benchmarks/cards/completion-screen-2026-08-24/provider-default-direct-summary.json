@@ -1,0 +1,40 @@
+{
+  "accounting_issues": [],
+  "environment_digest": "5cf95365eaa24e164dee20c30a49aa4358c7c9ae8877782594f238b5d9a7feae",
+  "grader_digest": "8dd00de1a82abb877b53f67f08be751b52c5c2a480824b43c3f682e58d2302a7",
+  "mean_total_tokens": 3071.333,
+  "p95_latency_ms": 292280.208,
+  "recipe": "provider-default-direct",
+  "recipe_digest": "9b4e39b20afa3426306ac38e1143c1f9f7416b6d42588779bd9c196cf6203fcb",
+  "reproducibility_issues": [],
+  "seeds": [
+    {
+      "attempted": 15,
+      "empty_outputs": 8,
+      "infrastructure_failures": 0,
+      "passed": 7,
+      "recovery_attempts": 0,
+      "seed": 101,
+      "unextractable_answers": 8
+    },
+    {
+      "attempted": 15,
+      "empty_outputs": 9,
+      "infrastructure_failures": 0,
+      "passed": 6,
+      "recovery_attempts": 0,
+      "seed": 202,
+      "unextractable_answers": 9
+    },
+    {
+      "attempted": 15,
+      "empty_outputs": 9,
+      "infrastructure_failures": 0,
+      "passed": 6,
+      "recovery_attempts": 0,
+      "seed": 303,
+      "unextractable_answers": 9
+    }
+  ],
+  "task_set_digest": "2c0d398b9efbfb7c4fa60ac149b07d8061bbed2a32497c62459d327c0ea44816"
+}

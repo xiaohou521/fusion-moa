@@ -1,0 +1,10 @@
+{
+  "expected_seed_count": 3,
+  "expected_attempts_per_seed": 15,
+  "min_non_regressing_seeds": 2,
+  "min_aggregate_pass_delta": 0,
+  "min_unextractable_reduction": 0.25,
+  "max_p95_latency_ratio": 1.25,
+  "max_mean_token_ratio": 1.25,
+  "max_infrastructure_failure_rate_delta": 0.0
+}

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "benchmark": "livecodebench/code_generation_lite",
+  "screen_only": true,
+  "dataset_file_sha256": "556716dfe49c74cd0061354a1f4a0f069a6e555c8676a6c527a01e1c70a8c282",
+  "task_set_digest": "2c0d398b9efbfb7c4fa60ac149b07d8061bbed2a32497c62459d327c0ea44816",
+  "seeds": [101, 202, 303],
+  "pair_order": "seeded three-way balanced crossover",
+  "variants": {
+    "provider-default-direct": {
+      "thinking_mode": "provider-default",
+      "max_recovery_attempts": 0
+    },
+    "thinking-disabled-direct": {
+      "thinking_mode": "disabled",
+      "max_recovery_attempts": 0
+    },
+    "thinking-disabled-recovery": {
+      "thinking_mode": "disabled",
+      "max_recovery_attempts": 1,
+      "recovery_max_tokens": 2048
+    }
+  },
+  "grader": {
+    "name": "livecodebench-official-execution-grader",
+    "commit": "28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+    "timeout_seconds": 10
+  },
+  "grader_digest": "8dd00de1a82abb877b53f67f08be751b52c5c2a480824b43c3f682e58d2302a7",
+  "published_environment": {
+    "runtime_source_digest": "c751ea1b1d0e3c520a495fe248375c7d634a17f8dca9ece1a606a7a1ab2ee6a3",
+    "decode": {
+      "temperature": 0.2,
+      "max_tokens": 4096,
+      "seeds": [101, 202, 303]
+    },
+    "concurrency": 1,
+    "cache_policy": "declared-warm",
+    "retry_policy": "none"
+  },
+  "environment_digest": "5cf95365eaa24e164dee20c30a49aa4358c7c9ae8877782594f238b5d9a7feae",
+  "environment_digest_includes_withheld_deployment_fields": true,
+  "actual_cost_usd_available": false
+}

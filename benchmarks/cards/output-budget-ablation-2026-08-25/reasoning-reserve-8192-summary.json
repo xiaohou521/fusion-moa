@@ -1,0 +1,18 @@
+{
+  "accounting_issues": [],
+  "environment_digest": "87f1cd70573c32961ff880c4f574648a87a1a3c32433e1faf7288e68087dd348",
+  "grader_digest": "8dd00de1a82abb877b53f67f08be751b52c5c2a480824b43c3f682e58d2302a7",
+  "mean_completion_tokens": 2267.333,
+  "mean_prompt_tokens": 1344.311,
+  "mean_total_tokens": 3611.644,
+  "p95_latency_ms": 729769.466,
+  "recipe": "reasoning-reserve-8192",
+  "recipe_digest": "24cad8c9bd9c62a9dfe1396abd8bfa7db47d41ed0ce518f68616dc74538c6403",
+  "reproducibility_issues": [],
+  "seeds": [
+    {"attempted": 15, "empty_outputs": 0, "infrastructure_failures": 0, "passed": 12, "seed": 101, "truncated_outputs": 1, "unextractable_answers": 1},
+    {"attempted": 15, "empty_outputs": 0, "infrastructure_failures": 0, "passed": 11, "seed": 202, "truncated_outputs": 0, "unextractable_answers": 0},
+    {"attempted": 15, "empty_outputs": 0, "infrastructure_failures": 0, "passed": 11, "seed": 303, "truncated_outputs": 2, "unextractable_answers": 2}
+  ],
+  "task_set_digest": "2c0d398b9efbfb7c4fa60ac149b07d8061bbed2a32497c62459d327c0ea44816"
+}

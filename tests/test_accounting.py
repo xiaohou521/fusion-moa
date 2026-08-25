@@ -22,6 +22,15 @@ from fusion_runtime.accounting import (
             "total_tokens": 7,
             "input_tokens_details": {"cached_tokens": 2},
         },
+        {
+            "prompt_tokens": 4,
+            "completion_tokens": 3,
+            "total_tokens": 7,
+            "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "multimodal_tokens": None,
+            },
+        },
     ],
 )
 def test_common_provider_usage_shapes_are_complete(usage):
@@ -55,6 +64,7 @@ def test_known_usage_from_only_some_attempts_is_incomplete():
         ({"latency_ms": 12}, (USAGE_TOKENS_MISSING,)),
         ({"total_tokens": -1}, (USAGE_VALUE_INVALID,)),
         ({"total_tokens": True}, (USAGE_VALUE_INVALID,)),
+        ({"total_tokens": None}, (USAGE_VALUE_INVALID,)),
         (
             {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 99},
             (USAGE_TOTAL_MISMATCH,),

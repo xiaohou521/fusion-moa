@@ -106,6 +106,29 @@ class PolicySpec(StrictModel):
             or not 0 < expert_max_tokens <= 32_768
         ):
             raise ValueError("options.expert_max_tokens must be an integer from 1 to 32768")
+        if self.type == "reasoning-reserve":
+            allowed = {
+                "plan_max_tokens",
+                "final_answer_min_tokens",
+                "max_plan_chars",
+                "plan_thinking_mode",
+                "final_thinking_mode",
+            }
+            unknown = sorted(self.options.keys() - allowed)
+            if unknown:
+                raise ValueError("unknown reasoning-reserve options: " + ", ".join(unknown))
+            for name, default in (
+                ("plan_max_tokens", 256),
+                ("final_answer_min_tokens", 3072),
+                ("max_plan_chars", 4000),
+            ):
+                value = self.options.get(name, default)
+                if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= 32_768:
+                    raise ValueError(f"options.{name} must be an integer from 1 to 32768")
+            for name in ("plan_thinking_mode", "final_thinking_mode"):
+                value = self.options.get(name, "disabled")
+                if value not in {"provider-default", "disabled"}:
+                    raise ValueError(f"options.{name} must be provider-default or disabled")
         return self
 
 
