@@ -106,7 +106,7 @@ class PolicySpec(StrictModel):
             or not 0 < expert_max_tokens <= 32_768
         ):
             raise ValueError("options.expert_max_tokens must be an integer from 1 to 32768")
-        if self.type == "reasoning-reserve":
+        if self.type in {"reasoning-reserve", "adaptive-reasoning-reserve"}:
             allowed = {
                 "plan_max_tokens",
                 "final_answer_min_tokens",
@@ -114,9 +114,11 @@ class PolicySpec(StrictModel):
                 "plan_thinking_mode",
                 "final_thinking_mode",
             }
+            if self.type == "adaptive-reasoning-reserve":
+                allowed.update({"base_total_tokens", "extended_total_tokens"})
             unknown = sorted(self.options.keys() - allowed)
             if unknown:
-                raise ValueError("unknown reasoning-reserve options: " + ", ".join(unknown))
+                raise ValueError(f"unknown {self.type} options: " + ", ".join(unknown))
             for name, default in (
                 ("plan_max_tokens", 256),
                 ("final_answer_min_tokens", 3072),
@@ -129,6 +131,27 @@ class PolicySpec(StrictModel):
                 value = self.options.get(name, "disabled")
                 if value not in {"provider-default", "disabled"}:
                     raise ValueError(f"options.{name} must be provider-default or disabled")
+            if self.type == "adaptive-reasoning-reserve":
+                for name, default in (
+                    ("base_total_tokens", 4096),
+                    ("extended_total_tokens", 16384),
+                ):
+                    value = self.options.get(name, default)
+                    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                        raise ValueError(f"options.{name} must be a positive integer")
+                plan = self.options.get("plan_max_tokens", 256)
+                final_minimum = self.options.get("final_answer_min_tokens", 3072)
+                base = self.options.get("base_total_tokens", 4096)
+                extended = self.options.get("extended_total_tokens", 16384)
+                if base > extended:
+                    raise ValueError(
+                        "options.extended_total_tokens must be at least base_total_tokens"
+                    )
+                if plan + final_minimum > base:
+                    raise ValueError(
+                        "options.plan_max_tokens + final_answer_min_tokens must fit "
+                        "base_total_tokens"
+                    )
         return self
 
 

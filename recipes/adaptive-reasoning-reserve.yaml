@@ -1,0 +1,51 @@
+version: fusion/v1
+
+providers:
+  local:
+    type: openai-compatible
+    base_url: http://127.0.0.1:8000/v1
+    api_key_env: LOCAL_MODEL_KEY
+    timeout_seconds: 120
+
+models:
+  executor:
+    provider: local
+    model: my-coding-model
+    context_window: 131072
+    max_output: 16384
+    modalities: [text]
+    capabilities: [coding, reasoning]
+    tool_calling: true
+    reasoning: true
+    generation:
+      thinking:
+        modes: [provider-default]
+      final_answer_reserve: true
+    max_concurrency: 1
+
+pools:
+  coding:
+    main: executor
+
+policy:
+  type: adaptive-reasoning-reserve
+  max_expert_calls: 0
+  options:
+    plan_max_tokens: 256
+    final_answer_min_tokens: 3072
+    base_total_tokens: 4096
+    extended_total_tokens: 16384
+    max_plan_chars: 4000
+    plan_thinking_mode: provider-default
+    final_thinking_mode: provider-default
+
+completion:
+  require_public_output: true
+  require_tool_or_text: true
+  max_recovery_attempts: 0
+
+serve:
+  model_name: fusion-coding
+  pool: coding
+  protocols: [openai-chat, openai-responses, anthropic-messages]
+  api_key_env: FUSION_RUNTIME_API_KEY

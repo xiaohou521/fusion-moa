@@ -25,7 +25,8 @@ The v0.1 contract includes:
 - strict `fusion/v1` recipes with cross-reference and secret validation;
 - declared model capabilities and per-model concurrency limits;
 - OpenAI-compatible, llama.cpp, and Anthropic-compatible providers;
-- `direct`, `main-critic`, and parallel `review-board` policies;
+- `direct`, fixed/adaptive `reasoning-reserve`, `main-critic`, and parallel
+  `review-board` policies;
 - OpenAI Chat, OpenAI Responses, and Anthropic Messages endpoints;
 - portable function/tool-call round trips and `/v1/models` discovery;
 - native final-model SSE for all three public protocols;
@@ -68,6 +69,8 @@ curl http://127.0.0.1:18888/v1/chat/completions \
 Use [`recipes/review-board.yaml`](recipes/review-board.yaml) to mix providers
 and define role-named experts. A pool can use local models, hosted APIs, or both;
 the runtime never inspects GPU type or guesses capability from model names.
+For a single main model with length-aware budget routing, start from
+[`recipes/adaptive-reasoning-reserve.yaml`](recipes/adaptive-reasoning-reserve.yaml).
 
 ## Configuration model
 
@@ -128,6 +131,38 @@ two-call total compute free: the final call repeats the input context, so frozen
 evaluation must still gate aggregate input tokens and latency. A provider plugin
 must explicitly map the configured thinking modes; the built-in generic
 OpenAI-compatible provider does not guess a model-specific disable switch.
+
+For requests whose required answer length varies widely, the adaptive form lets
+the same bounded plan select between two aggregate ceilings:
+
+```yaml
+policy:
+  type: adaptive-reasoning-reserve
+  options:
+    plan_max_tokens: 256
+    final_answer_min_tokens: 3072
+    base_total_tokens: 4096
+    extended_total_tokens: 16384
+    max_plan_chars: 4000
+    plan_thinking_mode: disabled
+    final_thinking_mode: disabled
+```
+
+The plan's first non-empty line must be exactly `OUTPUT_BUDGET: base` or
+`OUTPUT_BUDGET: extended`. Missing, malformed, duplicate, or contradictory
+markers fail closed to the base tier. Planning failures do the same. The marker
+is removed before the bounded outline is passed to the final call, and the plan
+is never persisted by the policy.
+
+`base_total_tokens` and `extended_total_tokens` include both the private plan
+and the final answer. The selected total is always capped by both the model's
+declared `max_output` and the client request's `max_tokens`; neither setting can
+override those hard limits. If the extended signal cannot increase the budget,
+the base route is used and the reason is surfaced. The stable routes are
+`adaptive-reasoning-reserve-base` and
+`adaptive-reasoning-reserve-extended`, visible through `x-fusion-route`; a
+fail-closed reason is visible through `x-fusion-fallback`. Tools remain removed
+from planning and available to the authoritative native-streamed final call.
 
 Empty-output recovery is explicit and bounded:
 

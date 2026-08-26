@@ -11,7 +11,7 @@ Fusion MoA 是一个面向 coding agent 的、模型/GPU/harness 无关的 MoA
 
 - 严格的 `fusion/v1` YAML 配置与引用、密钥检查；
 - OpenAI-compatible、llama.cpp、Anthropic-compatible provider；
-- `direct`、单 critic、并行 `review-board` 三种策略；
+- `direct`、固定/自适应 `reasoning-reserve`、单 critic、并行 `review-board` 策略；
 - 每个模型独立配置上下文、输出、工具、推理、并发等能力；
 - OpenAI Chat、Responses、Anthropic Messages 三套入口；
 - function/tool call 回环、`/v1/models`、三套协议的最终模型原生 SSE；
@@ -93,6 +93,35 @@ models:
 映射的模式，并负责把 `request.thinking` 翻译成上游协议。声明就是插件合同：不支持时
 必须抛出 `CapabilityError`，不能静默丢弃。内置通用 provider 目前有意只声明
 `provider-default`。
+
+上游不能限制隐藏思考预算时，可以用内置 `reasoning-reserve` 把预算拆成一次有界私有
+规划和一次权威最终回答。若不同任务所需的最终答案长度差异很大，可使用自适应形式：
+
+```yaml
+policy:
+  type: adaptive-reasoning-reserve
+  options:
+    plan_max_tokens: 256
+    final_answer_min_tokens: 3072
+    base_total_tokens: 4096
+    extended_total_tokens: 16384
+    max_plan_chars: 4000
+    plan_thinking_mode: disabled
+    final_thinking_mode: disabled
+```
+
+私有规划的第一个非空行必须严格等于 `OUTPUT_BUDGET: base` 或
+`OUTPUT_BUDGET: extended`。marker 缺失、格式错误、重复、互相矛盾或规划调用失败时，
+策略都会 fail closed 到 base。marker 不会进入最终上下文；规划正文会被限长、转义并
+标记为非权威内容，策略本身不持久化规划文本。
+
+`base_total_tokens` 和 `extended_total_tokens` 是“私有规划 + 最终回答”的总上限。
+实际选择值还会被模型声明的 `max_output` 和客户端请求的 `max_tokens` 同时限制，策略
+不会越过任一硬上限。客户端上限不允许扩容时仍走 base，并显式给出降级原因。最终路线
+通过 `x-fusion-route` 暴露为 `adaptive-reasoning-reserve-base` 或
+`adaptive-reasoning-reserve-extended`，fail-closed 原因通过 `x-fusion-fallback` 暴露。
+规划调用不带工具；只有权威主模型最终调用保留工具，并作为原生流交付。两次调用的 usage
+会合并，任一次缺失 usage 都会使 accounting 不完整。
 
 空完成恢复必须显式开启，并且有硬上限：
 

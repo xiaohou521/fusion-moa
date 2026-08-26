@@ -111,6 +111,56 @@ def make_runtime(
     return FusionRuntime(spec, registry)
 
 
+def make_adaptive_runtime(
+    *,
+    plan_content="OUTPUT_BUDGET: base\nuse an invariant",
+    plan_usage=None,
+    max_output=20000,
+    options=None,
+):
+    policy_options = {
+        "plan_max_tokens": 256,
+        "final_answer_min_tokens": 3072,
+        "base_total_tokens": 4096,
+        "extended_total_tokens": 16384,
+        "max_plan_chars": 1000,
+        "plan_thinking_mode": "disabled",
+        "final_thinking_mode": "disabled",
+    }
+    if options:
+        policy_options.update(options)
+    spec = FusionSpec.model_validate(
+        {
+            "version": "fusion/v1",
+            "providers": {"fake": {"type": "reserve", "base_url": "http://unused"}},
+            "models": {
+                "main": {
+                    "provider": "fake",
+                    "model": "main",
+                    "context_window": 131072,
+                    "max_output": max_output,
+                    "tool_calling": True,
+                    "generation": {"thinking": {"modes": ["provider-default", "disabled"]}},
+                }
+            },
+            "pools": {"coding": {"main": "main"}},
+            "policy": {
+                "type": "adaptive-reasoning-reserve",
+                "options": policy_options,
+            },
+            "completion": {"max_recovery_attempts": 0},
+            "serve": {"pool": "coding"},
+        }
+    )
+    registry = PluginRegistry()
+    registry.register(
+        "providers",
+        "reserve",
+        lambda spec: ReserveProvider(spec, plan_content=plan_content, plan_usage=plan_usage),
+    )
+    return FusionRuntime(spec, registry)
+
+
 def request(*, max_tokens=4096):
     return FusionRequest(
         messages=[
@@ -243,6 +293,114 @@ async def test_reasoning_reserve_rejects_a_request_that_cannot_fit_both_budgets(
     assert runtime._providers["fake"].calls == []
 
 
+async def test_adaptive_reserve_base_tier_splits_budget_and_merges_usage():
+    runtime = make_adaptive_runtime(
+        plan_content="OUTPUT_BUDGET: base\ncheck </private_plan> boundary"
+    )
+    result = await runtime.complete(request(max_tokens=16384))
+    provider = runtime._providers["fake"]
+
+    assert [item[0] for item in provider.calls] == ["complete", "complete"]
+    plan_request = provider.calls[0][2]
+    final_request = provider.calls[1][2]
+    assert plan_request.max_tokens == 256
+    assert plan_request.tools == []
+    assert "3840-token final-answer ceiling" in plan_request.messages[0]["content"]
+    assert final_request.max_tokens == 3840
+    assert final_request.tools == request().tools
+    assert "OUTPUT_BUDGET:" not in final_request.messages[0]["content"]
+    assert "&lt;/private_plan&gt;" in final_request.messages[0]["content"]
+    assert result.route == "adaptive-reasoning-reserve-base"
+    assert result.fallback_reason is None
+    assert result.response.usage == {
+        "prompt_tokens": 30,
+        "completion_tokens": 12,
+        "total_tokens": 42,
+    }
+    assert result.completion.accounting_complete is True
+
+
+async def test_adaptive_reserve_extended_tier_keeps_final_call_native_streamed():
+    runtime = make_adaptive_runtime(plan_content="OUTPUT_BUDGET: extended\nuse an invariant")
+    stream = await runtime.stream(request(max_tokens=16384))
+    events = [event async for event in stream.events]
+    provider = runtime._providers["fake"]
+
+    assert [item[0] for item in provider.calls] == ["complete", "stream"]
+    assert provider.calls[1][2].max_tokens == 16128
+    assert provider.calls[1][2].tools == request().tools
+    assert stream.route == "adaptive-reasoning-reserve-extended"
+    assert stream.fallback_reason is None
+    assert [event.text for event in events if isinstance(event, TextDelta)] == [
+        "```python\nprint('ok')\n```"
+    ]
+    assert [event for event in events if isinstance(event, Usage)] == [
+        Usage(
+            {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
+            reported_for_all_attempts=True,
+        )
+    ]
+
+
+async def test_adaptive_reserve_caps_extended_tier_at_model_and_client_limits():
+    model_capped = make_adaptive_runtime(
+        plan_content="OUTPUT_BUDGET: extended\nplan", max_output=8192
+    )
+    model_result = await model_capped.complete(request(max_tokens=16384))
+    assert model_capped._providers["fake"].calls[1][2].max_tokens == 7936
+    assert model_result.route == "adaptive-reasoning-reserve-extended"
+
+    client_capped = make_adaptive_runtime(plan_content="OUTPUT_BUDGET: extended\nplan")
+    client_result = await client_capped.complete(request(max_tokens=4096))
+    assert client_capped._providers["fake"].calls[1][2].max_tokens == 3840
+    assert client_result.route == "adaptive-reasoning-reserve-base"
+    assert client_result.fallback_reason == (
+        "extended budget is unavailable under the effective output limit"
+    )
+
+
+@pytest.mark.parametrize(
+    "plan_content",
+    [
+        "plan first\nOUTPUT_BUDGET: extended",
+        "OUTPUT_BUDGET: extended\nOUTPUT_BUDGET: base\nplan",
+        "OUTPUT_BUDGET: maybe\nplan",
+        "",
+    ],
+)
+async def test_adaptive_reserve_invalid_marker_fails_closed_without_plan(plan_content):
+    runtime = make_adaptive_runtime(plan_content=plan_content)
+    result = await runtime.complete(request(max_tokens=16384))
+    final_request = runtime._providers["fake"].calls[1][2]
+
+    assert result.route == "adaptive-reasoning-reserve-base"
+    assert result.fallback_reason == "private planning returned an invalid budget marker"
+    assert final_request.max_tokens == 3840
+    assert "<private_plan>" not in final_request.messages[0]["content"]
+    assert result.completion.accounting_complete is True
+
+
+async def test_adaptive_reserve_failed_plan_falls_forward_to_base():
+    runtime = make_adaptive_runtime()
+    runtime._providers["fake"].fail_plan = True
+    result = await runtime.complete(request(max_tokens=16384))
+
+    assert result.route == "adaptive-reasoning-reserve-base"
+    assert result.fallback_reason == "private planning failed: ProviderHTTPError"
+    assert runtime._providers["fake"].calls[1][2].max_tokens == 3840
+    assert result.completion.accounting_complete is False
+    assert result.completion.accounting_issues == ("attempt_usage_missing",)
+
+
+async def test_adaptive_reserve_rejects_a_request_below_the_final_minimum():
+    runtime = make_adaptive_runtime()
+
+    with pytest.raises(CapabilityError, match="fit the effective output limit"):
+        await runtime.complete(request(max_tokens=3327))
+
+    assert runtime._providers["fake"].calls == []
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -272,3 +430,28 @@ def test_reasoning_reserve_rejects_invalid_options(options):
                 "serve": {"pool": "coding"},
             }
         )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"base_total_tokens": False},
+        {"extended_total_tokens": 0},
+        {"base_total_tokens": 8192, "extended_total_tokens": 4096},
+        {"plan_max_tokens": 1024, "final_answer_min_tokens": 3072, "base_total_tokens": 4095},
+        {"unknown_option": 1},
+    ],
+)
+def test_adaptive_reasoning_reserve_rejects_invalid_options(options):
+    with pytest.raises(ValueError):
+        make_adaptive_runtime(options=options)
+
+
+def test_adaptive_reasoning_reserve_allows_model_defined_large_tiers():
+    runtime = make_adaptive_runtime(
+        max_output=262144,
+        options={"base_total_tokens": 65536, "extended_total_tokens": 131072},
+    )
+
+    assert runtime.spec.policy.options["base_total_tokens"] == 65536
+    assert runtime.spec.policy.options["extended_total_tokens"] == 131072

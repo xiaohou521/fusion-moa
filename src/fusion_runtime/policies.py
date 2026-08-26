@@ -122,6 +122,119 @@ class ReasoningReservePolicy:
         )
 
 
+class AdaptiveReasoningReservePolicy:
+    """Use a strict private-plan signal to select a bounded aggregate output tier."""
+
+    def __init__(self, spec: PolicySpec) -> None:
+        self.spec = spec
+
+    async def prepare(
+        self, runtime: RuntimeAccess, pool_name: str, request: FusionRequest
+    ) -> PreparedCall:
+        pool = runtime.spec.pools[pool_name]  # type: ignore[attr-defined]
+        model = runtime.spec.models[pool.main]  # type: ignore[attr-defined]
+        requested_limit = (
+            request.max_tokens if request.max_tokens is not None else model.max_output
+        )
+        hard_limit = min(requested_limit, model.max_output)
+        plan_budget = _positive_option(self.spec, "plan_max_tokens", 256)
+        final_minimum = _positive_option(self.spec, "final_answer_min_tokens", 3072)
+        if plan_budget + final_minimum > hard_limit:
+            raise CapabilityError(
+                "adaptive-reasoning-reserve requires plan_max_tokens + "
+                "final_answer_min_tokens to fit the effective output limit "
+                f"({hard_limit})"
+            )
+
+        base_total = min(
+            _positive_uncapped_option(self.spec, "base_total_tokens", 4096), hard_limit
+        )
+        extended_total = min(
+            _positive_uncapped_option(self.spec, "extended_total_tokens", 16384),
+            hard_limit,
+        )
+        plan_mode = _thinking_mode_option(self.spec, "plan_thinking_mode")
+        final_mode = _thinking_mode_option(self.spec, "final_thinking_mode")
+        plan_request = replace(
+            request,
+            messages=_normalize_system_context(
+                request.messages,
+                prefix=_adaptive_plan_instruction(base_total - plan_budget),
+            ),
+            tools=[],
+            tool_choice=None,
+            parallel_tool_calls=None,
+            reasoning_effort=(
+                request.reasoning_effort if plan_mode == "provider-default" else None
+            ),
+            thinking=ThinkingConfig(mode=plan_mode),
+            max_tokens=plan_budget,
+            metadata={**request.metadata, "fusion_internal_role": "private-plan"},
+        )
+
+        started = time.perf_counter()
+        try:
+            plan = await runtime.call_model(pool.main, plan_request)
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - started) * 1000
+            return PreparedCall(
+                model_name=pool.main,
+                request=_reserved_final_request(
+                    request,
+                    plan="",
+                    final_budget=base_total - plan_budget,
+                    final_mode=final_mode,
+                ),
+                route="adaptive-reasoning-reserve-base",
+                fallback_reason=f"private planning failed: {type(exc).__name__}",
+                preparation_attempts=1,
+                preparation_duration_ms=duration_ms,
+                preparation_usage_complete=False,
+            )
+
+        duration_ms = (time.perf_counter() - started) * 1000
+        _usage_reported, accounting_issues = assess_usage(
+            plan.usage,
+            report_seen=bool(plan.usage),
+        )
+        signaled_tier, outline, marker_valid = _parse_adaptive_plan(plan.content)
+        selected_tier = "base"
+        selected_total = base_total
+        fallback_reasons: list[str] = []
+        private_plan = ""
+        if not marker_valid:
+            fallback_reasons.append("private planning returned an invalid budget marker")
+        else:
+            max_chars = _positive_option(self.spec, "max_plan_chars", 4000)
+            private_plan = _escape_private_plan(outline[:max_chars].strip())
+            if not private_plan:
+                fallback_reasons.append("private planning produced no usable outline")
+            if signaled_tier == "extended":
+                if extended_total > base_total:
+                    selected_tier = "extended"
+                    selected_total = extended_total
+                else:
+                    fallback_reasons.append(
+                        "extended budget is unavailable under the effective output limit"
+                    )
+
+        return PreparedCall(
+            model_name=pool.main,
+            request=_reserved_final_request(
+                request,
+                plan=private_plan,
+                final_budget=selected_total - plan_budget,
+                final_mode=final_mode,
+            ),
+            route=f"adaptive-reasoning-reserve-{selected_tier}",
+            fallback_reason="; ".join(fallback_reasons) or None,
+            preparation_attempts=1,
+            preparation_duration_ms=duration_ms,
+            preparation_usage=dict(plan.usage),
+            preparation_usage_complete=not accounting_issues,
+        )
+
+
 class MainCriticPolicy:
     """Read-only critic advice followed by one authoritative main-model call."""
 
@@ -310,9 +423,46 @@ def _positive_option(spec: PolicySpec, name: str, default: int) -> int:
     return default
 
 
+def _positive_uncapped_option(spec: PolicySpec, name: str, default: int) -> int:
+    value = spec.options.get(name, default)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return default
+
+
 def _thinking_mode_option(spec: PolicySpec, name: str) -> str:
     value = spec.options.get(name, "disabled")
     return value if value in {"provider-default", "disabled"} else "disabled"
+
+
+def _adaptive_plan_instruction(base_final_budget: int) -> str:
+    return (
+        "Assess the risk that your authoritative final answer will reach a "
+        f"{base_final_budget}-token final-answer ceiling before it emits one complete "
+        "executable solution. Your first non-empty line must be exactly OUTPUT_BUDGET: "
+        "extended when that risk is material, or exactly OUTPUT_BUDGET: base otherwise. "
+        "Then give a concise private solution plan with only essential invariants, edge "
+        "cases, and implementation steps. Do not call tools or write the final answer."
+    )
+
+
+def _parse_adaptive_plan(content: str) -> tuple[str, str, bool]:
+    lines = content.splitlines()
+    nonempty = [(index, line.strip()) for index, line in enumerate(lines) if line.strip()]
+    if not nonempty:
+        return "base", "", False
+    marker_lines = [
+        line for _index, line in nonempty if line.startswith("OUTPUT_BUDGET:")
+    ]
+    valid_markers = {
+        "OUTPUT_BUDGET: base": "base",
+        "OUTPUT_BUDGET: extended": "extended",
+    }
+    first_index, first_line = nonempty[0]
+    if len(marker_lines) != 1 or first_line not in valid_markers:
+        return "base", "", False
+    outline = "\n".join(lines[:first_index] + lines[first_index + 1 :]).strip()
+    return valid_markers[first_line], outline, True
 
 
 def _reserved_final_request(

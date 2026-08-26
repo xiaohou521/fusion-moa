@@ -14,6 +14,7 @@ from .config import FusionSpec
 from .errors import CapabilityError, ProviderError, ProviderProtocolError
 from .plugins import PluginRegistry
 from .policies import (
+    AdaptiveReasoningReservePolicy,
     DirectPolicy,
     MainCriticPolicy,
     ReasoningReservePolicy,
@@ -49,6 +50,9 @@ class FusionRuntime:
         self.registry.register("providers", "anthropic-compatible", AnthropicCompatibleProvider)
         self.registry.register("policies", "direct", lambda _spec: DirectPolicy())
         self.registry.register("policies", "reasoning-reserve", ReasoningReservePolicy)
+        self.registry.register(
+            "policies", "adaptive-reasoning-reserve", AdaptiveReasoningReservePolicy
+        )
         self.registry.register("policies", "main-critic", MainCriticPolicy)
         self.registry.register("policies", "review-board", ReviewBoardPolicy)
         self.registry.discover()
