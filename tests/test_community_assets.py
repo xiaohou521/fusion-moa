@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from fusion_runtime.cli import main as cli_main
+from fusion_runtime.config import load_spec
 from fusion_runtime.evaluation import (
     BudgetAblationPolicy,
     CodeReserveScreenPolicy,
@@ -16,6 +17,15 @@ from fusion_runtime.evaluation import (
 )
 
 ROOT = Path(__file__).parents[1]
+
+
+def test_direct_recipe_is_a_valid_user_starting_point():
+    spec = load_spec(ROOT / "recipes" / "direct.yaml")
+
+    assert spec.policy.type == "direct"
+    assert spec.policy.max_expert_calls == 0
+    assert spec.pools[spec.serve.pool].experts == {}
+    assert spec.serve.model_name == "fusion-coding"
 
 
 def test_deepseek_harness_bundle_manifest_and_patch():
