@@ -127,9 +127,7 @@ class PolicySpec(StrictModel):
             }
             unknown = sorted(self.options.keys() - allowed)
             if unknown:
-                raise ValueError(
-                    "unknown adaptive-self-review options: " + ", ".join(unknown)
-                )
+                raise ValueError("unknown adaptive-self-review options: " + ", ".join(unknown))
             if self.max_expert_calls > 1:
                 raise ValueError("adaptive-self-review permits at most one expert call route")
             for name, default in (
@@ -137,20 +135,14 @@ class PolicySpec(StrictModel):
                 ("max_plan_chars", 4000),
             ):
                 value = self.options.get(name, default)
-                if (
-                    not isinstance(value, int)
-                    or isinstance(value, bool)
-                    or not 0 < value <= 32_768
-                ):
+                if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= 32_768:
                     raise ValueError(f"options.{name} must be an integer from 1 to 32768")
             tiers = self.options.get("expert_token_tiers", [512, 1024, 2048])
             if (
                 not isinstance(tiers, list)
                 or not 1 <= len(tiers) <= 5
                 or any(
-                    not isinstance(value, int)
-                    or isinstance(value, bool)
-                    or not 0 < value <= 32_768
+                    not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= 32_768
                     for value in tiers
                 )
                 or tiers != sorted(set(tiers))

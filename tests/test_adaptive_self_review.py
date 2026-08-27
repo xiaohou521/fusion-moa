@@ -68,9 +68,7 @@ def make_runtime(
                     "context_window": 100_000,
                     "max_output": 4096,
                     "tool_calling": True,
-                    "generation": {
-                        "thinking": {"modes": ["provider-default", "disabled"]}
-                    },
+                    "generation": {"thinking": {"modes": ["provider-default", "disabled"]}},
                 },
                 "reviewer": {
                     "provider": "fake",

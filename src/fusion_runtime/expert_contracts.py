@@ -236,8 +236,7 @@ def _completion_tokens(usage: dict[str, Any]) -> int | None:
 
 def _validate_tiers(token_tiers: tuple[int, ...]) -> None:
     if not token_tiers or any(
-        not isinstance(value, int) or isinstance(value, bool) or value <= 0
-        for value in token_tiers
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in token_tiers
     ):
         raise ValueError("expert token tiers must be positive integers")
     if tuple(sorted(set(token_tiers))) != token_tiers:

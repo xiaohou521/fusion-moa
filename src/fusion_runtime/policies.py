@@ -135,9 +135,7 @@ class AdaptiveReasoningReservePolicy:
     ) -> PreparedCall:
         pool = runtime.spec.pools[pool_name]  # type: ignore[attr-defined]
         model = runtime.spec.models[pool.main]  # type: ignore[attr-defined]
-        requested_limit = (
-            request.max_tokens if request.max_tokens is not None else model.max_output
-        )
+        requested_limit = request.max_tokens if request.max_tokens is not None else model.max_output
         hard_limit = min(requested_limit, model.max_output)
         plan_budget = _positive_option(self.spec, "plan_max_tokens", 256)
         final_minimum = _positive_option(self.spec, "final_answer_min_tokens", 3072)
@@ -261,9 +259,7 @@ class AdaptiveSelfReviewPolicy:
                 ),
                 route="adaptive-self-review-direct-fallback",
                 fallback_reason=(
-                    "expert budget is zero"
-                    if reviewer_name
-                    else f"pool has no {expert_role} role"
+                    "expert budget is zero" if reviewer_name else f"pool has no {expert_role} role"
                 ),
             )
 
@@ -357,17 +353,13 @@ class AdaptiveSelfReviewPolicy:
                 advice=expert.advice,
                 final_mode=final_mode,
             ),
-            route=(
-                f"adaptive-self-review-b{expert.selected_max_tokens}-{expert.action}"
-            ),
+            route=(f"adaptive-self-review-b{expert.selected_max_tokens}-{expert.action}"),
             experts_used=(reviewer_name,),
             fallback_reason="; ".join(fallback_reasons) or None,
             preparation_attempts=1 + expert.attempts,
             preparation_duration_ms=duration_ms,
             preparation_usage=preparation_usage,
-            preparation_usage_complete=(
-                not plan_accounting_issues and expert.usage_complete
-            ),
+            preparation_usage_complete=(not plan_accounting_issues and expert.usage_complete),
         )
 
 
@@ -623,9 +615,7 @@ def _parse_adaptive_plan(content: str) -> tuple[str, str, bool]:
     nonempty = [(index, line.strip()) for index, line in enumerate(lines) if line.strip()]
     if not nonempty:
         return "base", "", False
-    marker_lines = [
-        line for _index, line in nonempty if line.startswith("OUTPUT_BUDGET:")
-    ]
+    marker_lines = [line for _index, line in nonempty if line.startswith("OUTPUT_BUDGET:")]
     valid_markers = {
         "OUTPUT_BUDGET: base": "base",
         "OUTPUT_BUDGET: extended": "extended",
@@ -661,9 +651,7 @@ def _reserved_final_request(
     return replace(
         request,
         messages=_normalize_system_context(request.messages, suffix=context),
-        reasoning_effort=(
-            request.reasoning_effort if final_mode == "provider-default" else None
-        ),
+        reasoning_effort=(request.reasoning_effort if final_mode == "provider-default" else None),
         thinking=ThinkingConfig(mode=final_mode),
         max_tokens=final_budget,
         metadata={**request.metadata, "fusion_private_plan_used": bool(plan)},
@@ -746,9 +734,7 @@ def _self_review_final_request(
     return replace(
         request,
         messages=_normalize_system_context(request.messages, suffix="\n\n".join(blocks)),
-        reasoning_effort=(
-            request.reasoning_effort if final_mode == "provider-default" else None
-        ),
+        reasoning_effort=(request.reasoning_effort if final_mode == "provider-default" else None),
         thinking=ThinkingConfig(mode=final_mode),
         metadata={
             **request.metadata,

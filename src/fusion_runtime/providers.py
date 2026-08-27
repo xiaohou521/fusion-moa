@@ -442,8 +442,7 @@ def _require_supported_structured_output(
 ) -> None:
     if request.structured_output is not None and request.structured_output.mode not in modes:
         raise CapabilityError(
-            "provider does not map structured output mode "
-            f"{request.structured_output.mode!r}"
+            f"provider does not map structured output mode {request.structured_output.mode!r}"
         )
 
 
