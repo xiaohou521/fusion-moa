@@ -1,0 +1,76 @@
+version: fusion/v1
+
+providers:
+  main_api:
+    type: openai-compatible
+    base_url: http://127.0.0.1:8000/v1
+    api_key_env: MAIN_MODEL_KEY
+    timeout_seconds: 120
+  expert_api:
+    type: openai-compatible
+    base_url: http://127.0.0.1:8001/v1
+    api_key_env: EXPERT_MODEL_KEY
+    timeout_seconds: 120
+
+models:
+  executor:
+    provider: main_api
+    model: my-coding-model
+    context_window: 131072
+    max_output: 16384
+    modalities: [text]
+    capabilities: [coding, reasoning]
+    tool_calling: true
+    reasoning: true
+    generation:
+      thinking:
+        modes: [provider-default]
+      final_answer_reserve: false
+    max_concurrency: 1
+
+  reviewer:
+    provider: expert_api
+    model: my-review-model
+    context_window: 131072
+    max_output: 2048
+    modalities: [text]
+    capabilities: [code-review, reasoning]
+    reasoning: true
+    generation:
+      thinking:
+        modes: [provider-default]
+      structured_output:
+        modes: [json-schema]
+      final_answer_reserve: false
+    max_concurrency: 1
+
+pools:
+  coding:
+    main: executor
+    experts:
+      reviewer: reviewer
+
+policy:
+  type: adaptive-self-review
+  max_expert_calls: 1
+  options:
+    expert_role: reviewer
+    self_plan_max_tokens: 256
+    max_plan_chars: 4000
+    expert_token_tiers: [512, 1024, 2048]
+    max_advice_chars: 1600
+    expert_temperature: 0.2
+    self_plan_thinking_mode: provider-default
+    expert_thinking_mode: provider-default
+    final_thinking_mode: provider-default
+
+completion:
+  require_public_output: true
+  require_tool_or_text: true
+  max_recovery_attempts: 0
+
+serve:
+  model_name: fusion-coding
+  pool: coding
+  protocols: [openai-chat, openai-responses, anthropic-messages]
+  api_key_env: FUSION_RUNTIME_API_KEY

@@ -11,7 +11,8 @@ Fusion MoA 是一个面向 coding agent 的、模型/GPU/harness 无关的 MoA
 
 - 严格的 `fusion/v1` YAML 配置与引用、密钥检查；
 - OpenAI-compatible、llama.cpp、Anthropic-compatible provider；
-- `direct`、固定/自适应 `reasoning-reserve`、单 critic、并行 `review-board` 策略；
+- `direct`、固定/自适应 `reasoning-reserve`、结构化自适应 `self-review`、单 critic、
+  并行 `review-board` 策略；
 - 每个模型独立配置上下文、输出、工具、推理、并发等能力；
 - OpenAI Chat、Responses、Anthropic Messages 三套入口；
 - function/tool call 回环、`/v1/models`、三套协议的最终模型原生 SSE；
@@ -60,6 +61,9 @@ cp recipes/review-board.yaml my-recipe.yaml
 fusion-runtime --config my-recipe.yaml --port 18888
 ```
 
+如果要使用“主模型先做有界计划、一个只读专家再审查”的路线，可从
+[`recipes/adaptive-self-review.yaml`](recipes/adaptive-self-review.yaml) 开始修改。
+
 客户端设置：
 
 ```text
@@ -81,6 +85,8 @@ models:
     generation:
       thinking:
         modes: [provider-default, disabled, bounded]
+      structured_output:
+        modes: [json-schema]
       final_answer_reserve: true
 ```
 
@@ -93,6 +99,13 @@ models:
 映射的模式，并负责把 `request.thinking` 翻译成上游协议。声明就是插件合同：不支持时
 必须抛出 `CapabilityError`，不能静默丢弃。内置通用 provider 目前有意只声明
 `provider-default`。
+
+结构化输出也必须显式声明。`json-schema` 表示模型实际 endpoint 接受由 provider 强制的
+JSON Schema，且 provider 插件会映射规范化的 `StructuredOutputConfig`，并不表示仅靠
+prompt 就能稳定输出 JSON。内置 OpenAI-compatible provider 会把它映射为
+`response_format.type=json_schema`；内置 Anthropic-compatible provider 暂未映射，
+会在请求上游前显式失败。第三方 provider 应声明
+`structured_output_modes = frozenset({"json-schema"})` 并完成真实翻译，不能静默丢弃。
 
 上游不能限制隐藏思考预算时，可以用内置 `reasoning-reserve` 把预算拆成一次有界私有
 规划和一次权威最终回答。若不同任务所需的最终答案长度差异很大，可使用自适应形式：
@@ -122,6 +135,37 @@ policy:
 `adaptive-reasoning-reserve-extended`，fail-closed 原因通过 `x-fusion-fallback` 暴露。
 规划调用不带工具；只有权威主模型最终调用保留工具，并作为原生流交付。两次调用的 usage
 会合并，任一次缺失 usage 都会使 accounting 不完整。
+
+固定专家上限对短任务浪费、对长任务又不够时，可以使用实验性的
+`adaptive-self-review`：
+
+```yaml
+policy:
+  type: adaptive-self-review
+  max_expert_calls: 1
+  options:
+    expert_role: reviewer
+    self_plan_max_tokens: 256
+    expert_token_tiers: [512, 1024, 2048]
+    max_advice_chars: 1600
+    self_plan_thinking_mode: provider-default
+    expert_thinking_mode: provider-default
+    final_thinking_mode: provider-default
+```
+
+专家只能返回 schema 强制的 `advise` 或 `abstain` envelope。只有 finish reason 明确表示
+长度截断，或 JSON 无效且 usage 显示输出 token 已到当前档位时，才会进入下一档。
+schema、语义、能力、传输和 provider 错误立即 fail closed，不会仅靠反复增加长度掩盖
+问题。档位还受专家模型 `max_output` 的硬限制；例如配置 `[512, 1024, 2048]`、模型上限
+为 768 时，实际档位为 `[512, 768]`。默认最多尝试三档，专家 completion token 的聚合
+硬上限是 3584。
+
+自计划和专家审查都属于不带工具的私有准备调用；审查内容经转义后作为不可信上下文交给
+主模型，只有主模型保留原始工具并产生公共原生流。`x-fusion-route` 会显示类似
+`adaptive-self-review-b512-advise` 的实际档位与动作，错误通过
+`x-fusion-fallback` 显式暴露。计划和全部专家尝试的 usage 都计入总账；任一次 usage 缺失
+或矛盾，accounting 就不完整。这个策略目前是候选机制，不代表通用性能提升，用户仍需在
+自己的冻结任务上与 direct、matched-compute 做真实部署验证。
 
 空完成恢复必须显式开启，并且有硬上限：
 

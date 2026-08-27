@@ -10,6 +10,7 @@ from fusion_runtime.types import (
     Finish,
     FusionRequest,
     StreamError,
+    StructuredOutputConfig,
     TextDelta,
     ThinkingConfig,
     ToolCallDelta,
@@ -47,6 +48,47 @@ def test_builtin_generic_providers_reject_unmapped_thinking_modes(provider_class
 
     with pytest.raises(CapabilityError, match="does not map thinking mode 'disabled'"):
         provider_class._payload(model(), request)
+
+
+def test_openai_provider_maps_provider_neutral_json_schema() -> None:
+    request = FusionRequest(
+        messages=[{"role": "user", "content": "classify"}],
+        structured_output=StructuredOutputConfig(
+            mode="json-schema",
+            name="decision",
+            schema={
+                "type": "object",
+                "properties": {"action": {"enum": ["yes", "no"]}},
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+    payload = OpenAICompatibleProvider._payload(model(), request)
+
+    assert payload["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "decision",
+            "strict": True,
+            "schema": request.structured_output.schema,
+        },
+    }
+
+
+def test_anthropic_provider_rejects_unmapped_structured_output() -> None:
+    request = FusionRequest(
+        messages=[],
+        structured_output=StructuredOutputConfig(
+            mode="json-schema",
+            name="decision",
+            schema={"type": "object"},
+        ),
+    )
+
+    with pytest.raises(CapabilityError, match="structured output mode 'json-schema'"):
+        AnthropicCompatibleProvider._payload(model(), request)
 
 
 async def test_openai_provider_preserves_tools_and_tool_calls():

@@ -3,7 +3,7 @@
 from .config import FusionSpec, load_spec
 from .errors import CapabilityError
 from .runtime import FusionRuntime
-from .types import RecoveryOutcome, RecoveryRecord, ThinkingConfig
+from .types import RecoveryOutcome, RecoveryRecord, StructuredOutputConfig, ThinkingConfig
 
 __all__ = [
     "CapabilityError",
@@ -11,6 +11,7 @@ __all__ = [
     "FusionSpec",
     "RecoveryOutcome",
     "RecoveryRecord",
+    "StructuredOutputConfig",
     "ThinkingConfig",
     "load_spec",
 ]

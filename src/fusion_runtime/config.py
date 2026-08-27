@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .types import ThinkingMode
+from .types import StructuredOutputMode, ThinkingMode
 
 ProtocolName = Literal["openai-chat", "openai-responses", "anthropic-messages"]
 _ENV_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
@@ -57,8 +57,15 @@ class ThinkingCapabilities(StrictModel):
     modes: set[ThinkingMode] = Field(default_factory=lambda: {"provider-default"}, min_length=1)
 
 
+class StructuredOutputCapabilities(StrictModel):
+    modes: set[StructuredOutputMode] = Field(default_factory=set)
+
+
 class GenerationCapabilities(StrictModel):
     thinking: ThinkingCapabilities = Field(default_factory=ThinkingCapabilities)
+    structured_output: StructuredOutputCapabilities = Field(
+        default_factory=StructuredOutputCapabilities
+    )
     final_answer_reserve: bool = False
 
 
@@ -106,6 +113,70 @@ class PolicySpec(StrictModel):
             or not 0 < expert_max_tokens <= 32_768
         ):
             raise ValueError("options.expert_max_tokens must be an integer from 1 to 32768")
+        if self.type == "adaptive-self-review":
+            allowed = {
+                "expert_role",
+                "expert_temperature",
+                "expert_thinking_mode",
+                "expert_token_tiers",
+                "final_thinking_mode",
+                "max_advice_chars",
+                "max_plan_chars",
+                "self_plan_max_tokens",
+                "self_plan_thinking_mode",
+            }
+            unknown = sorted(self.options.keys() - allowed)
+            if unknown:
+                raise ValueError(
+                    "unknown adaptive-self-review options: " + ", ".join(unknown)
+                )
+            if self.max_expert_calls > 1:
+                raise ValueError("adaptive-self-review permits at most one expert call route")
+            for name, default in (
+                ("self_plan_max_tokens", 256),
+                ("max_plan_chars", 4000),
+            ):
+                value = self.options.get(name, default)
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 < value <= 32_768
+                ):
+                    raise ValueError(f"options.{name} must be an integer from 1 to 32768")
+            tiers = self.options.get("expert_token_tiers", [512, 1024, 2048])
+            if (
+                not isinstance(tiers, list)
+                or not 1 <= len(tiers) <= 5
+                or any(
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 < value <= 32_768
+                    for value in tiers
+                )
+                or tiers != sorted(set(tiers))
+            ):
+                raise ValueError(
+                    "options.expert_token_tiers must contain 1 to 5 strictly increasing "
+                    "integers from 1 to 32768"
+                )
+            for name in (
+                "self_plan_thinking_mode",
+                "expert_thinking_mode",
+                "final_thinking_mode",
+            ):
+                value = self.options.get(name, "disabled")
+                if value not in {"provider-default", "disabled"}:
+                    raise ValueError(f"options.{name} must be provider-default or disabled")
+            temperature = self.options.get("expert_temperature", 0.2)
+            if (
+                not isinstance(temperature, (int, float))
+                or isinstance(temperature, bool)
+                or not 0 <= temperature <= 2
+            ):
+                raise ValueError("options.expert_temperature must be a number from 0 to 2")
+            role = self.options.get("expert_role", "reviewer")
+            if not isinstance(role, str) or not role.strip() or len(role) > 64:
+                raise ValueError("options.expert_role must contain 1 to 64 characters")
         if self.type in {"reasoning-reserve", "adaptive-reasoning-reserve"}:
             allowed = {
                 "plan_max_tokens",

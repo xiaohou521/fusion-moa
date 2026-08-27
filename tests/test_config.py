@@ -116,6 +116,40 @@ def test_invalid_expert_token_budget_is_rejected_at_load_time() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"expert_token_tiers": []},
+        {"expert_token_tiers": [512, 512]},
+        {"expert_token_tiers": [1024, 512]},
+        {"expert_token_tiers": [512, 0]},
+        {"expert_temperature": True},
+        {"expert_temperature": 2.1},
+        {"expert_thinking_mode": "automatic"},
+        {"expert_role": ""},
+        {"unknown": 1},
+    ],
+)
+def test_invalid_adaptive_self_review_options_fail_closed(options) -> None:
+    with pytest.raises(ValidationError):
+        FusionSpec.model_validate(
+            {
+                "version": "fusion/v1",
+                "providers": {
+                    "p": {"type": "openai-compatible", "base_url": "http://localhost/v1"}
+                },
+                "models": {"main": {"provider": "p", "model": "m", "context_window": 10}},
+                "pools": {"coding": {"main": "main"}},
+                "policy": {
+                    "type": "adaptive-self-review",
+                    "max_expert_calls": 1,
+                    "options": options,
+                },
+                "serve": {"pool": "coding"},
+            }
+        )
+
+
 def test_generation_capabilities_are_explicit_and_strict() -> None:
     spec = FusionSpec.model_validate(
         {

@@ -20,6 +20,7 @@ from .types import (
     ModelResponse,
     ModelStreamEvent,
     StreamError,
+    StructuredOutputMode,
     TextDelta,
     ThinkingMode,
     ToolCallDelta,
@@ -29,6 +30,7 @@ from .types import (
 
 class Provider(Protocol):
     thinking_modes: frozenset[ThinkingMode]
+    structured_output_modes: frozenset[StructuredOutputMode]
 
     async def complete(self, model: ModelSpec, request: FusionRequest) -> ModelResponse: ...
     def stream(
@@ -39,6 +41,7 @@ class Provider(Protocol):
 
 class OpenAICompatibleProvider:
     thinking_modes: frozenset[ThinkingMode] = frozenset({"provider-default"})
+    structured_output_modes: frozenset[StructuredOutputMode] = frozenset({"json-schema"})
 
     def __init__(self, spec: ProviderSpec, client: httpx.AsyncClient | None = None) -> None:
         headers = dict(spec.headers)
@@ -186,6 +189,7 @@ class OpenAICompatibleProvider:
     @classmethod
     def _payload(cls, model: ModelSpec, request: FusionRequest) -> dict[str, object]:
         _require_supported_thinking(cls.thinking_modes, request)
+        _require_supported_structured_output(cls.structured_output_modes, request)
         payload: dict[str, object] = {
             "model": model.model,
             "messages": request.messages,
@@ -202,6 +206,16 @@ class OpenAICompatibleProvider:
             payload["seed"] = request.seed
         if request.reasoning_effort is not None:
             payload["reasoning_effort"] = request.reasoning_effort
+        if request.structured_output is not None:
+            output = request.structured_output
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": output.name,
+                    "strict": output.strict,
+                    "schema": output.schema,
+                },
+            }
         return payload
 
     async def aclose(self) -> None:
@@ -210,6 +224,7 @@ class OpenAICompatibleProvider:
 
 class AnthropicCompatibleProvider:
     thinking_modes: frozenset[ThinkingMode] = frozenset({"provider-default"})
+    structured_output_modes: frozenset[StructuredOutputMode] = frozenset()
 
     def __init__(self, spec: ProviderSpec, client: httpx.AsyncClient | None = None) -> None:
         headers = {"anthropic-version": "2023-06-01", **spec.headers}
@@ -385,6 +400,7 @@ class AnthropicCompatibleProvider:
     @classmethod
     def _payload(cls, model: ModelSpec, request: FusionRequest) -> dict[str, object]:
         _require_supported_thinking(cls.thinking_modes, request)
+        _require_supported_structured_output(cls.structured_output_modes, request)
         system = "\n\n".join(
             _content_text(item.get("content", ""))
             for item in request.messages
@@ -418,6 +434,17 @@ class AnthropicCompatibleProvider:
 def _require_supported_thinking(modes: frozenset[ThinkingMode], request: FusionRequest) -> None:
     if request.thinking.mode not in modes:
         raise CapabilityError(f"provider does not map thinking mode {request.thinking.mode!r}")
+
+
+def _require_supported_structured_output(
+    modes: frozenset[StructuredOutputMode],
+    request: FusionRequest,
+) -> None:
+    if request.structured_output is not None and request.structured_output.mode not in modes:
+        raise CapabilityError(
+            "provider does not map structured output mode "
+            f"{request.structured_output.mode!r}"
+        )
 
 
 def _anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

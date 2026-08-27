@@ -25,8 +25,8 @@ The v0.1 contract includes:
 - strict `fusion/v1` recipes with cross-reference and secret validation;
 - declared model capabilities and per-model concurrency limits;
 - OpenAI-compatible, llama.cpp, and Anthropic-compatible providers;
-- `direct`, fixed/adaptive `reasoning-reserve`, `main-critic`, and parallel
-  `review-board` policies;
+- `direct`, fixed/adaptive `reasoning-reserve`, structured adaptive
+  `self-review`, `main-critic`, and parallel `review-board` policies;
 - OpenAI Chat, OpenAI Responses, and Anthropic Messages endpoints;
 - portable function/tool-call round trips and `/v1/models` discovery;
 - native final-model SSE for all three public protocols;
@@ -71,6 +71,8 @@ and define role-named experts. A pool can use local models, hosted APIs, or both
 the runtime never inspects GPU type or guesses capability from model names.
 For a single main model with length-aware budget routing, start from
 [`recipes/adaptive-reasoning-reserve.yaml`](recipes/adaptive-reasoning-reserve.yaml).
+To add one read-only reviewer after a bounded main-model plan, start from
+[`recipes/adaptive-self-review.yaml`](recipes/adaptive-self-review.yaml).
 
 ## Configuration model
 
@@ -93,6 +95,8 @@ models:
     generation:
       thinking:
         modes: [provider-default, disabled, bounded]
+      structured_output:
+        modes: [json-schema]
       final_answer_reserve: true
 ```
 
@@ -101,6 +105,14 @@ models:
 plugin support them; bounded requests also carry a positive token budget no
 larger than the effective output limit. This capability is separate from the
 OpenAI-specific `reasoning_effort` passthrough.
+
+Structured output is explicit as well. `json-schema` means the model accepts a
+provider-enforced JSON Schema request and the provider adapter maps the
+normalized `StructuredOutputConfig`; it is not a claim that prompt-only JSON is
+reliable. The built-in OpenAI-compatible provider maps this mode to
+`response_format.type=json_schema`. The built-in Anthropic-compatible provider
+does not currently map it and fails before making an upstream request. Declare
+the mode only when the model's actual endpoint supports the contract.
 
 When a provider cannot enforce a hidden-reasoning budget, the built-in
 `reasoning-reserve` policy can make the budget split explicit:
@@ -212,6 +224,43 @@ bounded and marked untrusted, and only the main model can produce the public
 answer or tool call. A failed expert is surfaced through `x-fusion-fallback`;
 it cannot silently become the writer.
 
+For tasks where one fixed expert ceiling is either wasteful or too short, the
+experimental `adaptive-self-review` policy combines a bounded main-model plan
+with one structured independent review:
+
+```yaml
+policy:
+  type: adaptive-self-review
+  max_expert_calls: 1
+  options:
+    expert_role: reviewer
+    self_plan_max_tokens: 256
+    expert_token_tiers: [512, 1024, 2048]
+    max_advice_chars: 1600
+    self_plan_thinking_mode: provider-default
+    expert_thinking_mode: provider-default
+    final_thinking_mode: provider-default
+```
+
+The expert must return exactly one schema-constrained `advise` or `abstain`
+envelope. A higher tier is attempted only after an explicit length finish, or
+after invalid JSON whose reported output-token count has reached the requested
+tier. Schema, semantic, capability, transport, and provider errors fail closed
+without buying more tokens. The configured tiers are bounded by the expert
+model's declared `max_output`; for example, `[512, 1024, 2048]` becomes
+`[512, 768]` when that hard limit is 768. At most one call is made per usable
+tier, so the default aggregate expert completion ceiling is 3584 tokens.
+
+The self-plan and review are private preparation calls with tools removed. The
+review is escaped and injected as untrusted context; only the authoritative
+main model retains the original tools and emits the native public stream.
+Routes such as `adaptive-self-review-b512-advise` and
+`adaptive-self-review-b1024-abstain` expose the selected tier and action.
+Preparation usage is merged across the plan and every expert attempt; missing
+or contradictory usage keeps completion accounting incomplete. This policy is
+a candidate mechanism, not a general quality claim; deploy and validate it
+against direct and matched-compute routes on your own frozen workload.
+
 ## Plugin contract
 
 Provider packages register a factory under `fusion_runtime.providers`; policy
@@ -232,6 +281,11 @@ normalized modes it actually maps, for example
 is a promise to translate `request.thinking` to the upstream protocol. An
 unsupported mode must raise `CapabilityError`, not be dropped. The built-in
 generic providers intentionally publish only `provider-default`.
+
+Providers that accept normalized schema-constrained requests also publish, for
+example, `structured_output_modes = frozenset({"json-schema"})`, and translate
+`request.structured_output` or raise `CapabilityError`. They must not silently
+drop an unsupported structured-output request.
 
 A policy implements
 `async prepare(runtime, pool_name, request) -> PreparedCall`: experts finish in

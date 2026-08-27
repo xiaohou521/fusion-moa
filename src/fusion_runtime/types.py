@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 ThinkingMode = Literal["provider-default", "disabled", "bounded"]
 THINKING_MODES: frozenset[str] = frozenset({"provider-default", "disabled", "bounded"})
+StructuredOutputMode = Literal["json-schema"]
+STRUCTURED_OUTPUT_MODES: frozenset[str] = frozenset({"json-schema"})
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,26 @@ class ThinkingConfig:
 
 
 @dataclass(frozen=True)
+class StructuredOutputConfig:
+    """Provider-neutral request for one schema-constrained model response."""
+
+    mode: StructuredOutputMode
+    name: str
+    schema: dict[str, Any]
+    strict: bool = True
+
+    def __post_init__(self) -> None:
+        if self.mode not in STRUCTURED_OUTPUT_MODES:
+            raise ValueError(f"unknown structured output mode: {self.mode!r}")
+        if not isinstance(self.name, str) or not self.name.strip() or len(self.name) > 64:
+            raise ValueError("structured output name must contain 1 to 64 characters")
+        if not isinstance(self.schema, dict) or not self.schema:
+            raise ValueError("structured output schema must be a non-empty object")
+        if not isinstance(self.strict, bool):
+            raise ValueError("structured output strict must be a boolean")
+
+
+@dataclass(frozen=True)
 class FusionRequest:
     messages: list[dict[str, Any]]
     tools: list[dict[str, Any]] = field(default_factory=list)
@@ -37,6 +59,7 @@ class FusionRequest:
     parallel_tool_calls: bool | None = None
     reasoning_effort: str | None = None
     thinking: ThinkingConfig = field(default_factory=ThinkingConfig)
+    structured_output: StructuredOutputConfig | None = None
     max_tokens: int | None = None
     temperature: float | None = None
     seed: int | None = None

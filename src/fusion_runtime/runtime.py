@@ -15,6 +15,7 @@ from .errors import CapabilityError, ProviderError, ProviderProtocolError
 from .plugins import PluginRegistry
 from .policies import (
     AdaptiveReasoningReservePolicy,
+    AdaptiveSelfReviewPolicy,
     DirectPolicy,
     MainCriticPolicy,
     ReasoningReservePolicy,
@@ -23,6 +24,7 @@ from .policies import (
 from .providers import AnthropicCompatibleProvider, OpenAICompatibleProvider
 from .recovery import merge_usage, prepare_recovery_request, requires_recovery
 from .types import (
+    STRUCTURED_OUTPUT_MODES,
     THINKING_MODES,
     CompletionOutcome,
     CompletionRecord,
@@ -53,6 +55,7 @@ class FusionRuntime:
         self.registry.register(
             "policies", "adaptive-reasoning-reserve", AdaptiveReasoningReservePolicy
         )
+        self.registry.register("policies", "adaptive-self-review", AdaptiveSelfReviewPolicy)
         self.registry.register("policies", "main-critic", MainCriticPolicy)
         self.registry.register("policies", "review-board", ReviewBoardPolicy)
         self.registry.discover()
@@ -112,6 +115,26 @@ class FusionRuntime:
             raise CapabilityError(
                 f"provider {model.provider!r} does not map thinking mode {thinking.mode!r}"
             )
+        structured_output = request.structured_output
+        if structured_output is not None:
+            mode = structured_output.mode
+            if mode not in model.generation.structured_output.modes:
+                raise CapabilityError(
+                    f"model {name!r} does not declare structured output mode {mode!r}"
+                )
+            provider_output_modes = getattr(provider, "structured_output_modes", frozenset())
+            if (
+                not isinstance(provider_output_modes, (set, frozenset))
+                or not provider_output_modes <= STRUCTURED_OUTPUT_MODES
+            ):
+                raise CapabilityError(
+                    f"provider {model.provider!r} has an invalid structured_output_modes "
+                    "declaration"
+                )
+            if mode not in provider_output_modes:
+                raise CapabilityError(
+                    f"provider {model.provider!r} does not map structured output mode {mode!r}"
+                )
 
     async def call_model(self, name: str, request: FusionRequest) -> ModelResponse:
         self._validate_request(name, request)
