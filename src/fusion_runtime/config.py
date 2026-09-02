@@ -169,6 +169,93 @@ class PolicySpec(StrictModel):
             role = self.options.get("expert_role", "reviewer")
             if not isinstance(role, str) or not role.strip() or len(role) > 64:
                 raise ValueError("options.expert_role must contain 1 to 64 characters")
+        if self.type == "expert-constrained":
+            allowed = {
+                "base_final_tokens",
+                "expert_retry_attempts",
+                "expert_roles",
+                "expert_temperature",
+                "expert_thinking_mode",
+                "expert_token_tiers",
+                "extended_final_tokens",
+                "final_thinking_mode",
+                "max_counterexample_chars",
+                "max_item_chars",
+                "max_must_fix_items",
+                "max_plan_chars",
+                "max_solution_delta_chars",
+                "self_plan_max_tokens",
+                "self_plan_thinking_mode",
+            }
+            unknown = sorted(self.options.keys() - allowed)
+            if unknown:
+                raise ValueError("unknown expert-constrained options: " + ", ".join(unknown))
+            if not 1 <= self.max_expert_calls <= 4:
+                raise ValueError("expert-constrained requires max_expert_calls from 1 to 4")
+            roles = self.options.get("expert_roles", ["reviewer", "reviewer_backup"])
+            if (
+                not isinstance(roles, list)
+                or not 1 <= len(roles) <= 4
+                or any(
+                    not isinstance(role, str) or not role.strip() or len(role) > 64
+                    for role in roles
+                )
+                or len(set(roles)) != len(roles)
+            ):
+                raise ValueError("options.expert_roles must contain 1 to 4 unique role names")
+            for name, default, upper in (
+                ("self_plan_max_tokens", 256, 32_768),
+                ("max_plan_chars", 2000, 32_768),
+                ("base_final_tokens", 8192, 32_768),
+                ("extended_final_tokens", 16_384, 32_768),
+                ("max_must_fix_items", 3, 5),
+                ("max_item_chars", 240, 4000),
+                ("max_counterexample_chars", 400, 4000),
+                ("max_solution_delta_chars", 600, 4000),
+            ):
+                value = self.options.get(name, default)
+                if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= upper:
+                    raise ValueError(f"options.{name} must be an integer from 1 to {upper}")
+            base = self.options.get("base_final_tokens", 8192)
+            extended = self.options.get("extended_final_tokens", 16_384)
+            if base > extended:
+                raise ValueError("options.extended_final_tokens must be at least base_final_tokens")
+            retry_attempts = self.options.get("expert_retry_attempts", 1)
+            if (
+                not isinstance(retry_attempts, int)
+                or isinstance(retry_attempts, bool)
+                or not 0 <= retry_attempts <= 2
+            ):
+                raise ValueError("options.expert_retry_attempts must be an integer from 0 to 2")
+            tiers = self.options.get("expert_token_tiers", [512, 1024, 2048])
+            if (
+                not isinstance(tiers, list)
+                or not 1 <= len(tiers) <= 5
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= 32_768
+                    for value in tiers
+                )
+                or tiers != sorted(set(tiers))
+            ):
+                raise ValueError(
+                    "options.expert_token_tiers must contain 1 to 5 strictly increasing "
+                    "integers from 1 to 32768"
+                )
+            for name in (
+                "self_plan_thinking_mode",
+                "expert_thinking_mode",
+                "final_thinking_mode",
+            ):
+                value = self.options.get(name, "disabled")
+                if value not in {"provider-default", "disabled"}:
+                    raise ValueError(f"options.{name} must be provider-default or disabled")
+            temperature = self.options.get("expert_temperature", 0.2)
+            if (
+                not isinstance(temperature, (int, float))
+                or isinstance(temperature, bool)
+                or not 0 <= temperature <= 2
+            ):
+                raise ValueError("options.expert_temperature must be a number from 0 to 2")
         if self.type in {"reasoning-reserve", "adaptive-reasoning-reserve"}:
             allowed = {
                 "plan_max_tokens",
@@ -265,6 +352,32 @@ class FusionSpec(StrictModel):
                 raise ValueError(f"pool {name!r} references unknown models: {sorted(missing)}")
         if self.serve.pool not in self.pools:
             raise ValueError(f"serve.pool references unknown pool {self.serve.pool!r}")
+        if self.policy.type == "expert-constrained":
+            roles = self.policy.options.get("expert_roles", ["reviewer", "reviewer_backup"])
+            selected_roles = roles[: self.policy.max_expert_calls]
+            for pool_name, pool in self.pools.items():
+                expert_names = [
+                    pool.experts[role] for role in selected_roles if role in pool.experts
+                ]
+                if not expert_names:
+                    raise ValueError(
+                        f"expert-constrained pool {pool_name!r} requires one configured expert role"
+                    )
+                if pool.main in expert_names:
+                    raise ValueError(
+                        f"expert-constrained pool {pool_name!r} requires an independent "
+                        "expert model"
+                    )
+                unsupported = [
+                    name
+                    for name in expert_names
+                    if "json-schema" not in self.models[name].generation.structured_output.modes
+                ]
+                if unsupported:
+                    raise ValueError(
+                        "expert-constrained experts must declare json-schema structured "
+                        f"output: {unsupported}"
+                    )
         return self
 
 

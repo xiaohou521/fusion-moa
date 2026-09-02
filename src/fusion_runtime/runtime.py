@@ -17,6 +17,7 @@ from .policies import (
     AdaptiveReasoningReservePolicy,
     AdaptiveSelfReviewPolicy,
     DirectPolicy,
+    ExpertConstrainedPolicy,
     MainCriticPolicy,
     ReasoningReservePolicy,
     ReviewBoardPolicy,
@@ -56,6 +57,7 @@ class FusionRuntime:
             "policies", "adaptive-reasoning-reserve", AdaptiveReasoningReservePolicy
         )
         self.registry.register("policies", "adaptive-self-review", AdaptiveSelfReviewPolicy)
+        self.registry.register("policies", "expert-constrained", ExpertConstrainedPolicy)
         self.registry.register("policies", "main-critic", MainCriticPolicy)
         self.registry.register("policies", "review-board", ReviewBoardPolicy)
         self.registry.discover()

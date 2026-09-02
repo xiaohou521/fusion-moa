@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-给 Coding Agent 一个模型 API，后面可以接你的主模型和可选专家模型。
+给 Coding Agent 一个模型 API，后面接你的主模型和独立专家模型。
 
 Fusion MoA 是一个开源、模型无关、GPU 无关的 Mixture-of-Agents 运行时。你可以接入已经在
 使用的本地模型或云 API，用一份 recipe 选择编排方式，再把统一的 OpenAI/Anthropic 兼容模型
@@ -15,11 +15,12 @@ Coding Agent
 Fusion MoA  ── 策略、预算、降级、用量统计
     │
     ├── 权威主模型 ──► 最终答案原生流
-    └── 可选只读专家 ─► 只提供私有建议
+    └── 独立只读专家 ─► 只提供私有纠错
 ```
 
-主模型始终是唯一对外输出者。专家不拿 coding tools，输出有硬上限并按不可信数据处理；专家
-失败时会安全降级到主模型。项目不绑定模型家族、推理服务、云平台、GPU 或 Coding Agent。
+主模型始终是唯一对外输出者。专家不拿 coding tools，输出有硬上限并按不可信数据处理；推荐的
+`expert-constrained` 策略要求先得到一份有效的独立专家审查，才能进入最终生成。项目不绑定模型
+家族、推理服务、云平台、GPU 或 Coding Agent。
 
 ## 现在能做什么
 
@@ -30,14 +31,14 @@ Fusion MoA  ── 策略、预算、降级、用量统计
 - OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三套客户端接口；
 - 权威主模型最终答案的原生流式，包括工具参数的增量事件；
 - function/tool call 回环和 `/v1/models`；
-- `direct`、推理预算预留、critic、review-board、自适应 self-review 等策略；
+- `direct`、推理预算预留、critic、review-board、自适应 self-review 和强制专家审查策略；
 - thinking、工具和 JSON Schema 结构化输出的显式能力检查；
 - 有界降级，以及覆盖全部模型调用的 usage 汇总与完整性标记；
 - 第三方 provider/policy 的 Python 插件入口；
 - 版本锁定的 [DeepSeek Harness 集成](integrations/deepseek-harness/README.md)。
 
-Fusion MoA 仍处于早期阶段。专家编排在某些任务上可能更贵，甚至不如 direct。建议先跑
-`direct` 基线，再用自己的任务验证专家是否真的带来收益。
+Fusion MoA 仍处于早期阶段。专家编排在某些任务上可能更贵，甚至不如 direct。请保留
+`direct` 作为实验对照，并在生产使用前用自己的 coding 任务验证完整专家链路。
 
 ## 快速开始
 
@@ -128,35 +129,44 @@ Model:    fusion-coding
 Anthropic 客户端会自行追加 `/v1/messages`；OpenAI 客户端使用带 `/v1` 的 Base URL。除非已经
 配置 TLS、网络访问控制和足够强的 API key，否则请让 Fusion MoA 只监听本机回环地址。
 
-## 加入一个专家 Reviewer
+## 使用强制专家审查
 
-从自适应 self-review recipe 开始：
+从 expert-constrained recipe 开始：
 
 ```bash
-cp recipes/adaptive-self-review.yaml fusion.yaml
+cp recipes/expert-constrained.yaml fusion.yaml
 export MAIN_MODEL_KEY='your-main-model-key'
-export EXPERT_MODEL_KEY='your-expert-model-key'
+export PRIMARY_EXPERT_KEY='your-primary-expert-key'
+export BACKUP_EXPERT_KEY='your-backup-expert-key'
 export FUSION_RUNTIME_API_KEY='choose-a-key-for-coding-agents'
 ```
 
-修改主模型和专家模型的 endpoint、模型 ID，然后按前面的方式检查并启动。请求路径会变成：
+修改三个 endpoint 和模型 ID，然后按前面的方式检查并启动。请求路径是：
 
 ```text
-主模型生成有界私有计划
+主模型先选择私有计划和最终答案预算
         ▼
-一个只读专家做结构化审查
+主独立专家返回紧凑的结构化纠错
+        │ 可重试网络错误只在同一档重试
+        └ 主专家仍失败时切换到独立备专家
         ▼
-主模型原生流式输出最终答案
+权威主模型只吸收纠错增量，并原生流式输出最终答案
 ```
 
-专家 endpoint 必须支持 provider 强制的 JSON Schema，返回 `advise` 或 `abstain`。默认档位是
-`512 → 1024 → 2048`，只有确实发生输出截断时才升级。Schema、语义、provider 或网络错误会
-立即安全降级，不会靠不断增加 token 掩盖问题。只有主模型最终调用保留 Coding Agent 的工具。
+每个专家 endpoint 都必须支持 provider 强制的 JSON Schema。有效审查只能是 `abstain`，或一个
+有界的 `advise` 对象：风险类别、最多三条 must-fix、一个反例和一个 solution delta。主模型在
+看到专家意见前就选定最终答案预算，因此专家不能通过文本扩大计算量。专家默认档位是
+`512 → 1024 → 2048`，只有 JSON 在当前上限被明确截断时才升级。
+
+这个策略里的专家审查是强制步骤。主专家遇到可重试网络错误时，会在同一档重试一次，然后切换
+到备专家；如果所有独立专家都无法返回有效审查，请求会以 `required_expert_failed` 明确失败，
+不会静默变成 direct。只有主模型最终调用保留 Coding Agent 的工具，也只有这次调用对客户端流式
+输出。
 
 测试时可以查看响应头：
 
-- `x-fusion-route`：实际策略、专家档位和 advise/abstain；
-- `x-fusion-fallback`：安全降级原因；
+- `x-fusion-route`：专家尝试序号、档位、advise/abstain 和最终预算；
+- `x-fusion-fallback`：存在有界恢复时的说明；
 - `x-fusion-streaming-mode: native-final`：确认最终模型原生流式。
 
 ## 选择合适的 Recipe
@@ -167,7 +177,8 @@ export FUSION_RUNTIME_API_KEY='choose-a-key-for-coding-agents'
 | [`recipes/local-main-critic.yaml`](recipes/local-main-critic.yaml) | 用一个有界 critic 审查主模型。 |
 | [`recipes/review-board.yaml`](recipes/review-board.yaml) | 多个不同角色的专家并行给建议。 |
 | [`recipes/adaptive-reasoning-reserve.yaml`](recipes/adaptive-reasoning-reserve.yaml) | 单模型预留最终答案空间，并按任务选择输出档位。 |
-| [`recipes/adaptive-self-review.yaml`](recipes/adaptive-self-review.yaml) | 独立专家审查主模型的有界计划。 |
+| [`recipes/expert-constrained.yaml`](recipes/expert-constrained.yaml) | **推荐专家路径：**强制紧凑审查、重试/备份，以及预先选定的最终预算。 |
+| [`recipes/adaptive-self-review.yaml`](recipes/adaptive-self-review.yaml) | 带 direct fallback 的早期自适应审查基线，仅用于对照。 |
 
 每份 recipe 都有六层：
 
@@ -198,7 +209,7 @@ OpenAI-compatible 模型接口接入，不代表 DeepSeek 官方背书。
 
 - 可断点恢复、模型无关的评测器和公开 Evidence Card；
 - direct 与 matched-compute 对照，区分专家价值和单纯增加推理成本；
-- 选择性路由，只在预期收益高于成本时调用专家；
+- 专家角色路由：每个请求至少选择一个独立专家，同时优化不同任务应该由谁审查；
 - 隐私安全的 outcome 存储、失败聚类和可复用失败分类；
 - 带谱系、拒绝、晋升和回滚的离线评测门控 recipe 演化；
 - 更多 provider、Coding Agent 和社区专家池插件；
